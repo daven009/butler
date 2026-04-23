@@ -1,0 +1,866 @@
+{
+  "tours": [
+    {
+      "id": "tour-d390b845",
+      "buyerName": "Jennifer Wong",
+      "buyerPhone": "+65 9555 1234",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-05-10",
+      "neighborhoods": [
+        "Clementi",
+        "Dover"
+      ],
+      "nextAction": "Add buyer availability and shortlisted listings",
+      "listings": [
+        {
+          "id": "listing-22268548",
+          "title": "Clementi Towers 3BR",
+          "address": "15 Clementi Avenue 2",
+          "district": "D05",
+          "askingPrice": 1650000,
+          "bedrooms": 3,
+          "bathrooms": 2,
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Kevin Tan",
+          "opposingAgentPhone": "+65 9666 7777",
+          "notes": "New listing, just posted today."
+        }
+      ],
+      "buyerAvailability": [
+        {
+          "id": "buyer-availability-4750e3bd",
+          "date": "2026-05-10",
+          "startTime": "09:00",
+          "endTime": "12:00",
+          "preference": "PREFERRED",
+          "note": "Morning is best"
+        },
+        {
+          "id": "buyer-availability-afc01e8d",
+          "date": "2026-05-10",
+          "startTime": "14:00",
+          "endTime": "17:00",
+          "preference": "AVAILABLE",
+          "note": "Afternoon backup"
+        }
+      ],
+      "opposingAgentAvailability": [
+        {
+          "id": "opposing-availability-d7ef3653",
+          "listingId": "listing-22268548",
+          "agentName": "Kevin Tan",
+          "slots": [
+            {
+              "date": "2026-05-10",
+              "startTime": "10:00",
+              "endTime": "11:00"
+            },
+            {
+              "date": "2026-05-10",
+              "startTime": "15:00",
+              "endTime": "16:00"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-23T16:32:37.194Z",
+          "source": "WHATSAPP"
+        }
+      ],
+      "coordinationEvents": [
+        {
+          "id": "coordination-event-8246f001",
+          "tourId": "tour-d390b845",
+          "listingId": "listing-22268548",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi Kevin, Butler AI assisting Maya Chen from Northstar Realty. Our buyer Jennifer is keen on Clementi Towers 3BR. Any viewing slots on May 10?",
+          "summary": "AI initial outreach to Kevin for Clementi Towers.",
+          "occurredAt": "2026-04-23T16:32:37.077Z",
+          "createdAt": "2026-04-23T16:32:37.077Z",
+          "updatedAt": "2026-04-23T16:32:37.077Z"
+        },
+        {
+          "id": "coordination-event-6874891b",
+          "tourId": "tour-d390b845",
+          "listingId": "listing-22268548",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi! Yes, the owner is available. Can do 10am-11am or 3pm-4pm. Let me know.",
+          "summary": "Kevin offered 10am-11am and 3pm-4pm.",
+          "parsedIntent": "PROPOSED_TIME",
+          "occurredAt": "2026-04-23T16:32:37.115Z",
+          "createdAt": "2026-04-23T16:32:37.115Z",
+          "updatedAt": "2026-04-23T16:32:37.115Z"
+        },
+        {
+          "id": "coordination-event-deb6cb5c",
+          "tourId": "tour-d390b845",
+          "listingId": "listing-22268548",
+          "kind": "AVAILABILITY_UPDATE",
+          "senderRole": "SYSTEM",
+          "source": "SYSTEM",
+          "body": "Parsed Kevin WhatsApp reply: 2 time slots extracted.",
+          "summary": "System parsed 2 slots.",
+          "parsedIntent": "AVAILABLE",
+          "relatedStatus": "AVAILABLE_SLOTS_RECEIVED",
+          "occurredAt": "2026-04-23T16:32:37.153Z",
+          "createdAt": "2026-04-23T16:32:37.153Z",
+          "updatedAt": "2026-04-23T16:32:37.153Z"
+        },
+        {
+          "id": "coordination-event-013b49ad",
+          "tourId": "tour-d390b845",
+          "listingId": "listing-22268548",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi Kevin, we will take the 10am slot on May 10. See you then!",
+          "summary": "AI confirmed 10am slot with Kevin.",
+          "occurredAt": "2026-04-23T16:32:37.522Z",
+          "createdAt": "2026-04-23T16:32:37.522Z",
+          "updatedAt": "2026-04-23T16:32:37.522Z"
+        }
+      ],
+      "schedule": [
+        {
+          "id": "schedule-72a57608",
+          "listingId": "listing-22268548",
+          "startAt": "2026-05-10T10:00:00+08:00",
+          "endAt": "2026-05-10T10:30:00+08:00",
+          "travelBufferMinutes": 0,
+          "status": "PROPOSED"
+        }
+      ],
+      "exceptions": [],
+      "createdAt": "2026-04-23T16:32:36.775Z",
+      "updatedAt": "2026-04-23T16:32:37.522Z"
+    },
+    {
+      "id": "tour-edf86acf",
+      "buyerName": "Test Buyer",
+      "buyerPhone": "+65 8888 0001",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-05-15",
+      "neighborhoods": [
+        "Bukit Timah",
+        "Holland Village"
+      ],
+      "nextAction": "Updated action",
+      "listings": [],
+      "buyerAvailability": [],
+      "opposingAgentAvailability": [],
+      "coordinationEvents": [],
+      "schedule": [],
+      "exceptions": [],
+      "createdAt": "2026-04-23T16:32:33.168Z",
+      "updatedAt": "2026-04-23T16:32:33.231Z"
+    },
+    {
+      "id": "tour-1001",
+      "buyerName": "Alicia Tan",
+      "buyerPhone": "+65 9123 4455",
+      "status": "COORDINATING",
+      "targetDate": "2026-04-28",
+      "neighborhoods": [
+        "River Valley",
+        "Orchard",
+        "Newton"
+      ],
+      "nextAction": "Chase Ethan Wong for Newton Suites slot; resolve school pickup conflict",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "listings": [
+        {
+          "id": "listing-101",
+          "title": "Valley Park 3BR",
+          "address": "473 River Valley Road",
+          "district": "D10",
+          "askingPrice": 2380000,
+          "bedrooms": 3,
+          "bathrooms": 2,
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Daniel Lim",
+          "opposingAgentPhone": "+65 9000 1111",
+          "notes": "Seller prefers viewings after 2 PM. Daniel is responsive on WhatsApp."
+        },
+        {
+          "id": "listing-102",
+          "title": "Scotts Square 2BR",
+          "address": "6 Scotts Road",
+          "district": "D09",
+          "askingPrice": 3100000,
+          "bedrooms": 2,
+          "bathrooms": 2,
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Priya Nair",
+          "opposingAgentPhone": "+65 9000 2222",
+          "notes": "Priya confirmed 2 slots, but the 3:30 PM slot conflicts with buyer school pickup."
+        },
+        {
+          "id": "listing-103",
+          "title": "Newton Suites 3BR",
+          "address": "60 Newton Road",
+          "district": "D11",
+          "askingPrice": 2650000,
+          "bedrooms": 3,
+          "bathrooms": 3,
+          "status": "SCHEDULED",
+          "opposingAgentName": "Ethan Wong",
+          "opposingAgentPhone": "+65 9000 3333",
+          "notes": "Ethan has not replied since initial contact. Follow-up sent."
+        },
+        {
+          "id": "listing-104",
+          "title": "Orchard Residences 2BR",
+          "address": "1 Orchard Turn",
+          "district": "D09",
+          "askingPrice": 4200000,
+          "bedrooms": 2,
+          "bathrooms": 2,
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Rachel Goh",
+          "opposingAgentPhone": "+65 9000 4444",
+          "notes": "Rachel confirmed via WhatsApp. Very responsive."
+        }
+      ],
+      "buyerAvailability": [
+        {
+          "id": "buyer-availability-c3e8189d",
+          "date": "2026-04-28",
+          "startTime": "13:00",
+          "endTime": "17:30",
+          "preference": "PREFERRED",
+          "note": "Reset main slot"
+        },
+        {
+          "id": "buyer-availability-3a362630",
+          "date": "2026-04-28",
+          "startTime": "10:00",
+          "endTime": "12:00",
+          "preference": "AVAILABLE",
+          "note": "Morning backup"
+        }
+      ],
+      "opposingAgentAvailability": [
+        {
+          "id": "oa-slot-2",
+          "agentName": "Priya Nair",
+          "listingId": "listing-102",
+          "slots": [
+            {
+              "date": "2026-04-28",
+              "startTime": "13:00",
+              "endTime": "13:45"
+            },
+            {
+              "date": "2026-04-28",
+              "startTime": "15:30",
+              "endTime": "16:15"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-24T10:30:00.000Z",
+          "source": "WHATSAPP"
+        },
+        {
+          "id": "oa-slot-3",
+          "agentName": "Rachel Goh",
+          "listingId": "listing-104",
+          "slots": [
+            {
+              "date": "2026-04-28",
+              "startTime": "10:00",
+              "endTime": "11:30"
+            },
+            {
+              "date": "2026-04-28",
+              "startTime": "16:00",
+              "endTime": "17:00"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-24T11:00:00.000Z",
+          "source": "WHATSAPP"
+        },
+        {
+          "id": "opposing-availability-93cf9369",
+          "listingId": "listing-101",
+          "agentName": "Daniel Lim",
+          "slots": [
+            {
+              "date": "2026-04-28",
+              "startTime": "14:00",
+              "endTime": "15:00"
+            },
+            {
+              "date": "2026-04-28",
+              "startTime": "16:30",
+              "endTime": "17:30"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-23T16:32:34.111Z",
+          "source": "WHATSAPP"
+        }
+      ],
+      "coordinationEvents": [
+        {
+          "id": "ce-101-01",
+          "tourId": "tour-1001",
+          "listingId": "listing-101",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi Daniel, this is Butler AI assisting Maya Chen from Northstar Realty. We have a buyer interested in Valley Park 3BR at 473 River Valley Road. Would you have any available viewing slots on April 28th (Monday)?",
+          "summary": "AI initial outreach to Daniel for Valley Park viewing.",
+          "occurredAt": "2026-04-23T08:00:00.000Z",
+          "createdAt": "2026-04-23T08:00:00.000Z",
+          "updatedAt": "2026-04-23T08:00:00.000Z"
+        },
+        {
+          "id": "ce-101-02",
+          "tourId": "tour-1001",
+          "listingId": "listing-101",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi! Yes the unit is available for viewing. Monday works. The seller prefers afternoon — I can do 2-3pm or 4:30-5:30pm. Let me know which works better for your buyer.",
+          "summary": "Daniel offered 2-3pm and 4:30-5:30pm slots.",
+          "parsedIntent": "PROPOSED_TIME",
+          "occurredAt": "2026-04-23T09:22:00.000Z",
+          "createdAt": "2026-04-23T09:22:00.000Z",
+          "updatedAt": "2026-04-23T09:22:00.000Z"
+        },
+        {
+          "id": "ce-101-03",
+          "tourId": "tour-1001",
+          "listingId": "listing-101",
+          "kind": "AVAILABILITY_UPDATE",
+          "senderRole": "SYSTEM",
+          "source": "SYSTEM",
+          "body": "Parsed Daniel's WhatsApp reply: 2 time slots extracted for April 28. Slots: 14:00-15:00, 16:30-17:30.",
+          "summary": "System parsed 2 time slots from Daniel's message.",
+          "parsedIntent": "AVAILABLE",
+          "relatedStatus": "AVAILABLE_SLOTS_RECEIVED",
+          "occurredAt": "2026-04-23T09:22:01.000Z",
+          "createdAt": "2026-04-23T09:22:01.000Z",
+          "updatedAt": "2026-04-23T09:22:01.000Z"
+        },
+        {
+          "id": "ce-101-04",
+          "tourId": "tour-1001",
+          "listingId": "listing-101",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Great, thanks Daniel! We'll confirm the exact time once our buyer's full schedule is locked. Likely the 2pm slot. Will get back to you by tomorrow.",
+          "summary": "AI acknowledged and will confirm after schedule optimization.",
+          "occurredAt": "2026-04-23T09:25:00.000Z",
+          "createdAt": "2026-04-23T09:25:00.000Z",
+          "updatedAt": "2026-04-23T09:25:00.000Z"
+        },
+        {
+          "id": "ce-101-05",
+          "tourId": "tour-1001",
+          "listingId": "listing-101",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "Sure no problem. Just let me know at least 2 hours before. 👍",
+          "summary": "Daniel confirmed flexible, needs 2-hour notice.",
+          "parsedIntent": "AVAILABLE",
+          "occurredAt": "2026-04-23T09:28:00.000Z",
+          "createdAt": "2026-04-23T09:28:00.000Z",
+          "updatedAt": "2026-04-23T09:28:00.000Z"
+        },
+        {
+          "id": "ce-102-01",
+          "tourId": "tour-1001",
+          "listingId": "listing-102",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi Priya, Butler AI here on behalf of Maya Chen (Northstar Realty). Our buyer is keen on the Scotts Square 2BR at 6 Scotts Road. Any viewing slots available on April 28?",
+          "summary": "AI reached out to Priya for Scotts Square.",
+          "occurredAt": "2026-04-23T08:05:00.000Z",
+          "createdAt": "2026-04-23T08:05:00.000Z",
+          "updatedAt": "2026-04-23T08:05:00.000Z"
+        },
+        {
+          "id": "ce-102-02",
+          "tourId": "tour-1001",
+          "listingId": "listing-102",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hello! Yes can. I have 1pm-1:45pm or 3:30pm-4:15pm on Monday. The owner will be overseas so I have the keys.",
+          "summary": "Priya offered 1-1:45pm and 3:30-4:15pm.",
+          "parsedIntent": "PROPOSED_TIME",
+          "occurredAt": "2026-04-23T10:10:00.000Z",
+          "createdAt": "2026-04-23T10:10:00.000Z",
+          "updatedAt": "2026-04-23T10:10:00.000Z"
+        },
+        {
+          "id": "ce-102-03",
+          "tourId": "tour-1001",
+          "listingId": "listing-102",
+          "kind": "AVAILABILITY_UPDATE",
+          "senderRole": "SYSTEM",
+          "source": "SYSTEM",
+          "body": "Parsed Priya's WhatsApp reply: 2 time slots extracted for April 28. Slots: 13:00-13:45, 15:30-16:15.",
+          "summary": "System parsed 2 slots from Priya.",
+          "parsedIntent": "AVAILABLE",
+          "relatedStatus": "AVAILABLE_SLOTS_RECEIVED",
+          "occurredAt": "2026-04-23T10:10:01.000Z",
+          "createdAt": "2026-04-23T10:10:01.000Z",
+          "updatedAt": "2026-04-23T10:10:01.000Z"
+        },
+        {
+          "id": "ce-102-04",
+          "tourId": "tour-1001",
+          "listingId": "listing-102",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Thanks Priya! Quick note — our buyer has school pickup around 3:15pm. The 1pm slot might work better. Let me confirm the route and get back to you.",
+          "summary": "AI flagged school pickup conflict with 3:30pm slot.",
+          "occurredAt": "2026-04-23T10:15:00.000Z",
+          "createdAt": "2026-04-23T10:15:00.000Z",
+          "updatedAt": "2026-04-23T10:15:00.000Z"
+        },
+        {
+          "id": "ce-102-05",
+          "tourId": "tour-1001",
+          "listingId": "listing-102",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "No worries, the 1pm slot is fine. Just come on time ya, I have another viewing at 2pm.",
+          "summary": "Priya confirmed 1pm works, hard stop at 2pm.",
+          "parsedIntent": "AVAILABLE",
+          "occurredAt": "2026-04-23T10:20:00.000Z",
+          "createdAt": "2026-04-23T10:20:00.000Z",
+          "updatedAt": "2026-04-23T10:20:00.000Z"
+        },
+        {
+          "id": "ce-103-01",
+          "tourId": "tour-1001",
+          "listingId": "listing-103",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi Ethan, this is Butler AI assisting Maya Chen from Northstar Realty. We have a buyer keen on the Newton Suites 3BR at 60 Newton Road. Do you have any viewing slots on April 28?",
+          "summary": "AI initial outreach to Ethan for Newton Suites.",
+          "occurredAt": "2026-04-23T08:10:00.000Z",
+          "createdAt": "2026-04-23T08:10:00.000Z",
+          "updatedAt": "2026-04-23T08:10:00.000Z"
+        },
+        {
+          "id": "ce-103-02",
+          "tourId": "tour-1001",
+          "listingId": "listing-103",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi Ethan, just following up on the Newton Suites viewing request. Would Monday April 28 afternoon work? Our buyer is flexible between 1pm-5:30pm.",
+          "summary": "AI follow-up to Ethan (no response after 24h).",
+          "occurredAt": "2026-04-24T08:00:00.000Z",
+          "createdAt": "2026-04-24T08:00:00.000Z",
+          "updatedAt": "2026-04-24T08:00:00.000Z"
+        },
+        {
+          "id": "ce-104-01",
+          "tourId": "tour-1001",
+          "listingId": "listing-104",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi Rachel, Butler AI here on behalf of Maya Chen. Our buyer is interested in Orchard Residences 2BR at 1 Orchard Turn. Any viewing availability on April 28?",
+          "summary": "AI reached out to Rachel for Orchard Residences.",
+          "occurredAt": "2026-04-23T08:15:00.000Z",
+          "createdAt": "2026-04-23T08:15:00.000Z",
+          "updatedAt": "2026-04-23T08:15:00.000Z"
+        },
+        {
+          "id": "ce-104-02",
+          "tourId": "tour-1001",
+          "listingId": "listing-104",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi! Sure, Monday works. I can do 10am-11:30am or 4pm-5pm. The unit is on high floor so the afternoon light is amazing if you can make it then!",
+          "summary": "Rachel offered 10am-11:30am and 4pm-5pm.",
+          "parsedIntent": "PROPOSED_TIME",
+          "occurredAt": "2026-04-23T08:45:00.000Z",
+          "createdAt": "2026-04-23T08:45:00.000Z",
+          "updatedAt": "2026-04-23T08:45:00.000Z"
+        },
+        {
+          "id": "ce-104-03",
+          "tourId": "tour-1001",
+          "listingId": "listing-104",
+          "kind": "AVAILABILITY_UPDATE",
+          "senderRole": "SYSTEM",
+          "source": "SYSTEM",
+          "body": "Parsed Rachel's WhatsApp reply: 2 time slots extracted for April 28. Slots: 10:00-11:30, 16:00-17:00.",
+          "summary": "System parsed 2 slots from Rachel.",
+          "parsedIntent": "AVAILABLE",
+          "relatedStatus": "AVAILABLE_SLOTS_RECEIVED",
+          "occurredAt": "2026-04-23T08:45:01.000Z",
+          "createdAt": "2026-04-23T08:45:01.000Z",
+          "updatedAt": "2026-04-23T08:45:01.000Z"
+        },
+        {
+          "id": "ce-104-04",
+          "tourId": "tour-1001",
+          "listingId": "listing-104",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Thanks Rachel! The afternoon slot sounds lovely. We're optimizing the route now — will confirm the exact time shortly.",
+          "summary": "AI acknowledged Rachel, leaning toward 4pm slot.",
+          "occurredAt": "2026-04-23T08:50:00.000Z",
+          "createdAt": "2026-04-23T08:50:00.000Z",
+          "updatedAt": "2026-04-23T08:50:00.000Z"
+        },
+        {
+          "id": "ce-104-05",
+          "tourId": "tour-1001",
+          "listingId": "listing-104",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "Great! FYI the carpark is at B2, lot numbers 45-48. Can meet at the lobby. See you then!",
+          "summary": "Rachel shared logistic details.",
+          "parsedIntent": "AVAILABLE",
+          "occurredAt": "2026-04-23T08:55:00.000Z",
+          "createdAt": "2026-04-23T08:55:00.000Z",
+          "updatedAt": "2026-04-23T08:55:00.000Z"
+        },
+        {
+          "id": "coordination-event-fa087bf4",
+          "tourId": "tour-1001",
+          "listingId": "listing-101",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "MANUAL",
+          "body": "Hi Daniel, we have confirmed the 2pm slot. See you Monday!",
+          "summary": "Hi Daniel, we have confirmed the 2pm slot. See you Monday!",
+          "occurredAt": "2026-04-23T16:32:34.775Z",
+          "createdAt": "2026-04-23T16:32:34.775Z",
+          "updatedAt": "2026-04-23T16:32:34.775Z"
+        },
+        {
+          "id": "coordination-event-64a73e8b",
+          "tourId": "tour-1001",
+          "listingId": "listing-102",
+          "kind": "HANDOFF",
+          "senderRole": "BUYER_AGENT",
+          "source": "SYSTEM",
+          "summary": "Butler will repropose new times to the opposing agent.",
+          "occurredAt": "2026-04-23T16:32:35.169Z",
+          "createdAt": "2026-04-23T16:32:35.169Z",
+          "updatedAt": "2026-04-23T16:32:35.169Z"
+        }
+      ],
+      "schedule": [
+        {
+          "id": "schedule-9c3a8d1e",
+          "listingId": "listing-104",
+          "startAt": "2026-04-28T10:00:00+08:00",
+          "endAt": "2026-04-28T10:30:00+08:00",
+          "travelBufferMinutes": 0,
+          "status": "PROPOSED"
+        },
+        {
+          "id": "schedule-a596c8f8",
+          "listingId": "listing-102",
+          "startAt": "2026-04-28T13:00:00+08:00",
+          "endAt": "2026-04-28T13:30:00+08:00",
+          "travelBufferMinutes": 15,
+          "status": "PROPOSED"
+        },
+        {
+          "id": "schedule-f1c45f93",
+          "listingId": "listing-101",
+          "startAt": "2026-04-28T14:00:00+08:00",
+          "endAt": "2026-04-28T14:30:00+08:00",
+          "travelBufferMinutes": 15,
+          "status": "PROPOSED"
+        }
+      ],
+      "exceptions": [
+        {
+          "id": "exception-1",
+          "tourId": "tour-1001",
+          "listingId": "listing-103",
+          "title": "No response from Ethan Wong",
+          "detail": "Ethan has not replied to initial outreach or follow-up for Newton Suites. Sent 2 WhatsApp messages over 24 hours.",
+          "severity": "HIGH",
+          "owner": "OPPOSING_AGENT",
+          "resolved": true
+        },
+        {
+          "id": "exception-2",
+          "tourId": "tour-1001",
+          "listingId": "listing-102",
+          "title": "School pickup timing conflict",
+          "detail": "Priya's 3:30pm Scotts Square slot conflicts with buyer's school pickup at 3:15pm. The 1pm slot is the only viable option but creates a tight schedule.",
+          "severity": "MEDIUM",
+          "owner": "BUYER_AGENT",
+          "resolved": true
+        }
+      ],
+      "createdAt": "2026-04-22T03:20:00.000Z",
+      "updatedAt": "2026-04-23T16:32:35.399Z"
+    },
+    {
+      "id": "tour-1002",
+      "buyerName": "Marcus Lee",
+      "buyerPhone": "+65 9888 7301",
+      "status": "READY_TO_SCHEDULE",
+      "targetDate": "2026-04-29",
+      "neighborhoods": [
+        "Tanjong Pagar",
+        "Marina Bay"
+      ],
+      "nextAction": "Send final confirmation to buyer and both listing agents",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "listings": [
+        {
+          "id": "listing-201",
+          "title": "Wallich Residence 1BR",
+          "address": "3 Wallich Street",
+          "district": "D02",
+          "askingPrice": 1980000,
+          "bedrooms": 1,
+          "bathrooms": 1,
+          "status": "SCHEDULED",
+          "opposingAgentName": "Sarah Koh",
+          "opposingAgentPhone": "+65 9111 8888",
+          "notes": "Confirmed via phone call. Sarah prefers WhatsApp for day-of coordination."
+        },
+        {
+          "id": "listing-202",
+          "title": "Marina One 2BR",
+          "address": "21 Marina Way",
+          "district": "D01",
+          "askingPrice": 2850000,
+          "bedrooms": 2,
+          "bathrooms": 2,
+          "status": "SCHEDULED",
+          "opposingAgentName": "Aaron Goh",
+          "opposingAgentPhone": "+65 9222 9999",
+          "notes": "Confirmed via WhatsApp. Seller will be home during viewing."
+        }
+      ],
+      "buyerAvailability": [
+        {
+          "id": "buyer-slot-4",
+          "date": "2026-04-29",
+          "startTime": "09:30",
+          "endTime": "12:30",
+          "preference": "PREFERRED",
+          "note": "Marcus prefers CBD area in one morning sweep."
+        }
+      ],
+      "opposingAgentAvailability": [
+        {
+          "id": "oa-slot-4",
+          "agentName": "Sarah Koh",
+          "listingId": "listing-201",
+          "slots": [
+            {
+              "date": "2026-04-29",
+              "startTime": "10:00",
+              "endTime": "10:45"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-23T08:45:00.000Z",
+          "source": "CALL"
+        },
+        {
+          "id": "oa-slot-5",
+          "agentName": "Aaron Goh",
+          "listingId": "listing-202",
+          "slots": [
+            {
+              "date": "2026-04-29",
+              "startTime": "11:15",
+              "endTime": "12:00"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-23T09:12:00.000Z",
+          "source": "WHATSAPP"
+        }
+      ],
+      "coordinationEvents": [
+        {
+          "id": "ce-201-01",
+          "tourId": "tour-1002",
+          "listingId": "listing-201",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi Sarah, Butler AI assisting Maya Chen here. We have a buyer interested in Wallich Residence 1BR. Would you have slots on April 29 morning?",
+          "summary": "AI reached out to Sarah for Wallich Residence.",
+          "occurredAt": "2026-04-22T08:00:00.000Z",
+          "createdAt": "2026-04-22T08:00:00.000Z",
+          "updatedAt": "2026-04-22T08:00:00.000Z"
+        },
+        {
+          "id": "ce-201-02",
+          "tourId": "tour-1002",
+          "listingId": "listing-201",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi! Let me call you to discuss — easier that way.",
+          "summary": "Sarah prefers call over WhatsApp.",
+          "parsedIntent": "WAITING",
+          "occurredAt": "2026-04-22T08:30:00.000Z",
+          "createdAt": "2026-04-22T08:30:00.000Z",
+          "updatedAt": "2026-04-22T08:30:00.000Z"
+        },
+        {
+          "id": "ce-201-03",
+          "tourId": "tour-1002",
+          "listingId": "listing-201",
+          "kind": "STATUS_CHANGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "CALL",
+          "body": "Phone call with Sarah Koh. She confirmed 10:00-10:45am on April 29 for Wallich Residence. Keys are with the security guard.",
+          "summary": "Sarah confirmed 10-10:45am via phone call.",
+          "parsedIntent": "AVAILABLE",
+          "relatedStatus": "SCHEDULED",
+          "occurredAt": "2026-04-22T09:15:00.000Z",
+          "createdAt": "2026-04-22T09:15:00.000Z",
+          "updatedAt": "2026-04-22T09:15:00.000Z"
+        },
+        {
+          "id": "ce-202-01",
+          "tourId": "tour-1002",
+          "listingId": "listing-202",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Hi Aaron, Butler AI on behalf of Maya Chen. Our buyer Marcus Lee is interested in Marina One 2BR at 21 Marina Way. Available April 29 morning?",
+          "summary": "AI reached out to Aaron for Marina One.",
+          "occurredAt": "2026-04-22T08:05:00.000Z",
+          "createdAt": "2026-04-22T08:05:00.000Z",
+          "updatedAt": "2026-04-22T08:05:00.000Z"
+        },
+        {
+          "id": "ce-202-02",
+          "tourId": "tour-1002",
+          "listingId": "listing-202",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "Sure! 11:15am to noon works. The seller will be home — she wants to show the unit herself. Please remove shoes at the door 🙏",
+          "summary": "Aaron confirmed 11:15am-noon, seller present.",
+          "parsedIntent": "PROPOSED_TIME",
+          "occurredAt": "2026-04-22T09:00:00.000Z",
+          "createdAt": "2026-04-22T09:00:00.000Z",
+          "updatedAt": "2026-04-22T09:00:00.000Z"
+        },
+        {
+          "id": "ce-202-03",
+          "tourId": "tour-1002",
+          "listingId": "listing-202",
+          "kind": "AVAILABILITY_UPDATE",
+          "senderRole": "SYSTEM",
+          "source": "SYSTEM",
+          "body": "Parsed Aaron's WhatsApp reply: 1 time slot extracted. Slot: 11:15-12:00 on April 29.",
+          "summary": "System parsed 1 slot from Aaron.",
+          "parsedIntent": "AVAILABLE",
+          "relatedStatus": "SCHEDULED",
+          "occurredAt": "2026-04-22T09:00:01.000Z",
+          "createdAt": "2026-04-22T09:00:01.000Z",
+          "updatedAt": "2026-04-22T09:00:01.000Z"
+        },
+        {
+          "id": "ce-202-04",
+          "tourId": "tour-1002",
+          "listingId": "listing-202",
+          "kind": "MESSAGE",
+          "senderRole": "BUYER_AGENT",
+          "source": "WHATSAPP",
+          "body": "Perfect, 11:15am it is! We'll be coming from Wallich Residence (about 15-minute drive). Will remind you the day before. Thanks Aaron!",
+          "summary": "AI confirmed 11:15am, noted travel from Wallich.",
+          "occurredAt": "2026-04-22T09:05:00.000Z",
+          "createdAt": "2026-04-22T09:05:00.000Z",
+          "updatedAt": "2026-04-22T09:05:00.000Z"
+        },
+        {
+          "id": "ce-202-05",
+          "tourId": "tour-1002",
+          "listingId": "listing-202",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "Sounds good! Just buzz unit 28-12 at the intercom. See you Tuesday! 😊",
+          "summary": "Aaron shared unit access details.",
+          "parsedIntent": "AVAILABLE",
+          "occurredAt": "2026-04-22T09:10:00.000Z",
+          "createdAt": "2026-04-22T09:10:00.000Z",
+          "updatedAt": "2026-04-22T09:10:00.000Z"
+        }
+      ],
+      "schedule": [
+        {
+          "id": "schedule-4",
+          "listingId": "listing-201",
+          "startAt": "2026-04-29T10:00:00+08:00",
+          "endAt": "2026-04-29T10:30:00+08:00",
+          "travelBufferMinutes": 0,
+          "status": "LOCKED"
+        },
+        {
+          "id": "schedule-5",
+          "listingId": "listing-202",
+          "startAt": "2026-04-29T11:15:00+08:00",
+          "endAt": "2026-04-29T11:45:00+08:00",
+          "travelBufferMinutes": 25,
+          "status": "LOCKED"
+        }
+      ],
+      "exceptions": [
+        {
+          "id": "exception-3",
+          "tourId": "tour-1002",
+          "title": "Confirmation messages not sent",
+          "detail": "Schedule is locked but final confirmation messages have not been sent to buyer Marcus Lee, Sarah Koh (Wallich), or Aaron Goh (Marina One).",
+          "severity": "LOW",
+          "owner": "BUYER_AGENT",
+          "resolved": false
+        }
+      ],
+      "createdAt": "2026-04-21T05:10:00.000Z",
+      "updatedAt": "2026-04-23T09:30:00.000Z"
+    }
+  ]
+}
