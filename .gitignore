@@ -1,0 +1,15 @@
+node_modules/
+.next/
+frontend/.next/
+dist/
+frontend/dist/
+frontend/.vite/
+backend/dist/
+
+.env
+.env.local
+frontend/.env.local
+frontend/.env
+
+frontend/certificates/
+npm-debug.log*

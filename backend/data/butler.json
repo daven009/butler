@@ -1,0 +1,166 @@
+{
+  "threads": [
+    {
+      "id": "thread-1001",
+      "tourId": "tour-1001",
+      "listingId": "listing-101",
+      "ownership": "AI"
+    },
+    {
+      "id": "thread-1002",
+      "tourId": "tour-1001",
+      "listingId": "listing-102",
+      "ownership": "AI"
+    },
+    {
+      "id": "thread-1003",
+      "tourId": "tour-1001",
+      "listingId": "listing-103",
+      "ownership": "AI"
+    },
+    {
+      "id": "thread-1004",
+      "tourId": "tour-1001",
+      "listingId": "listing-104",
+      "ownership": "AI"
+    },
+    {
+      "id": "thread-2001",
+      "tourId": "tour-1002",
+      "listingId": "listing-201",
+      "ownership": "AI"
+    },
+    {
+      "id": "thread-2002",
+      "tourId": "tour-1002",
+      "listingId": "listing-202",
+      "ownership": "AI"
+    },
+    {
+      "id": "thread-e4a471dd",
+      "tourId": "tour-d390b845",
+      "listingId": "listing-22268548",
+      "ownership": "AI"
+    }
+  ],
+  "inbox": [
+    {
+      "id": "schedule-5-confirmed",
+      "icon": "✓",
+      "tone": "green",
+      "title": "Aaron Goh confirmed 11:15 am",
+      "sub": "Marina One 2BR · Marcus Lee",
+      "read": false,
+      "createdAt": "2026-04-29T11:15:00+08:00"
+    },
+    {
+      "id": "schedule-5-confirmed",
+      "icon": "✓",
+      "tone": "green",
+      "title": "Aaron Goh confirmed 11:15 am",
+      "sub": "Marina One 2BR · Marcus Lee",
+      "read": true,
+      "createdAt": "2026-04-29T11:15:00+08:00"
+    },
+    {
+      "id": "schedule-4-confirmed",
+      "icon": "✓",
+      "tone": "green",
+      "title": "Sarah Koh confirmed 10:00 am",
+      "sub": "Wallich Residence 1BR · Marcus Lee",
+      "read": false,
+      "createdAt": "2026-04-29T10:00:00+08:00"
+    },
+    {
+      "id": "schedule-4-confirmed",
+      "icon": "✓",
+      "tone": "green",
+      "title": "Sarah Koh confirmed 10:00 am",
+      "sub": "Wallich Residence 1BR · Marcus Lee",
+      "read": false,
+      "createdAt": "2026-04-29T10:00:00+08:00"
+    },
+    {
+      "id": "schedule-f1c45f93-confirmed",
+      "icon": "✓",
+      "tone": "green",
+      "title": "Daniel Lim confirmed 2:00 pm",
+      "sub": "Valley Park 3BR · Alicia Tan",
+      "read": false,
+      "createdAt": "2026-04-28T14:00:00+08:00"
+    },
+    {
+      "id": "schedule-f1c45f93-confirmed",
+      "icon": "✓",
+      "tone": "green",
+      "title": "Daniel Lim confirmed 2:00 pm",
+      "sub": "Valley Park 3BR · Alicia Tan",
+      "read": false,
+      "createdAt": "2026-04-28T14:00:00+08:00"
+    },
+    {
+      "id": "schedule-a596c8f8-confirmed",
+      "icon": "✓",
+      "tone": "green",
+      "title": "Priya Nair confirmed 1:00 pm",
+      "sub": "Scotts Square 2BR · Alicia Tan",
+      "read": false,
+      "createdAt": "2026-04-28T13:00:00+08:00"
+    },
+    {
+      "id": "schedule-a596c8f8-confirmed",
+      "icon": "✓",
+      "tone": "green",
+      "title": "Priya Nair confirmed 1:00 pm",
+      "sub": "Scotts Square 2BR · Alicia Tan",
+      "read": false,
+      "createdAt": "2026-04-28T13:00:00+08:00"
+    },
+    {
+      "id": "schedule-9c3a8d1e-confirmed",
+      "icon": "✓",
+      "tone": "green",
+      "title": "Rachel Goh confirmed 10:00 am",
+      "sub": "Orchard Residences 2BR · Alicia Tan",
+      "read": false,
+      "createdAt": "2026-04-28T10:00:00+08:00"
+    },
+    {
+      "id": "schedule-9c3a8d1e-confirmed",
+      "icon": "✓",
+      "tone": "green",
+      "title": "Rachel Goh confirmed 10:00 am",
+      "sub": "Orchard Residences 2BR · Alicia Tan",
+      "read": false,
+      "createdAt": "2026-04-28T10:00:00+08:00"
+    },
+    {
+      "id": "exception-3",
+      "icon": "⚠️",
+      "tone": "red",
+      "title": "Confirmation messages not sent",
+      "sub": "Marcus Lee · Schedule is locked but final confirmation messages have not been sent to buyer Marcus Lee, Sarah Koh (Wallich), or Aaron Goh (Marina One).",
+      "target": "decision",
+      "read": false,
+      "createdAt": "2026-04-23T09:30:00.000Z"
+    },
+    {
+      "id": "exception-3",
+      "icon": "⚠️",
+      "tone": "red",
+      "title": "Confirmation messages not sent",
+      "sub": "Marcus Lee · Schedule is locked but final confirmation messages have not been sent to buyer Marcus Lee, Sarah Koh (Wallich), or Aaron Goh (Marina One).",
+      "target": "decision",
+      "read": false,
+      "createdAt": "2026-04-23T09:30:00.000Z"
+    }
+  ],
+  "shares": [
+    {
+      "id": "share-a7fce5a1",
+      "tourId": "tour-1002",
+      "sentAt": "2026-04-23T16:32:35.721Z",
+      "channel": "WHATSAPP"
+    }
+  ]
+}

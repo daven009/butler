@@ -1,0 +1,1124 @@
+{
+  "tours": [
+    {
+      "id": "tour-c2aad9b3",
+      "buyerName": "Scheduler Test Buyer 14:24:55",
+      "buyerPhone": "+65 8123 4567",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-06-15",
+      "neighborhoods": [
+        "Orchard",
+        "River Valley",
+        "Newton"
+      ],
+      "nextAction": "Run Scheduler v1 and review proposed itinerary",
+      "listings": [
+        {
+          "id": "listing-9af1b96c",
+          "title": "Orchard View 2BR",
+          "address": "1 Orchard Boulevard",
+          "district": "D10",
+          "askingPrice": 2680000,
+          "bedrooms": 2,
+          "bathrooms": 2,
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Daniel Lim",
+          "opposingAgentPhone": "+65 9000 1001",
+          "notes": "Good first stop near MRT."
+        },
+        {
+          "id": "listing-fe9bd779",
+          "title": "River Valley Loft",
+          "address": "18 River Valley Close",
+          "district": "D09",
+          "askingPrice": 2380000,
+          "bedrooms": 2,
+          "bathrooms": 2,
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Priya Nair",
+          "opposingAgentPhone": "+65 9000 1002",
+          "notes": "Can follow after Orchard with travel buffer."
+        },
+        {
+          "id": "listing-78211e29",
+          "title": "Newton Family Condo",
+          "address": "8 Newton Road",
+          "district": "D11",
+          "askingPrice": 3180000,
+          "bedrooms": 3,
+          "bathrooms": 3,
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Ethan Wong",
+          "opposingAgentPhone": "+65 9000 1003",
+          "notes": "No opposing availability yet, should be unscheduled."
+        },
+        {
+          "id": "listing-01965c5e",
+          "title": "Tanglin Late Slot",
+          "address": "22 Tanglin Road",
+          "district": "D10",
+          "askingPrice": 2880000,
+          "bedrooms": 2,
+          "bathrooms": 2,
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Sarah Koh",
+          "opposingAgentPhone": "+65 9000 1004",
+          "notes": "Opposing agent only has a slot outside buyer windows."
+        },
+        {
+          "id": "listing-616119a0",
+          "title": "Somerset Short Window",
+          "address": "9 Somerset Road",
+          "district": "D09",
+          "askingPrice": 2250000,
+          "bedrooms": 2,
+          "bathrooms": 2,
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Aaron Goh",
+          "opposingAgentPhone": "+65 9000 1005",
+          "notes": "Overlap exists but less than 30 minutes."
+        },
+        {
+          "id": "listing-a42b93be",
+          "title": "Cairnhill Waiting Reply",
+          "address": "11 Cairnhill Circle",
+          "district": "D09",
+          "askingPrice": 2550000,
+          "bedrooms": 2,
+          "bathrooms": 2,
+          "status": "WAITING_REPLY",
+          "opposingAgentName": "Melissa Tan",
+          "opposingAgentPhone": "+65 9000 1006",
+          "notes": "Mock scenario: should be excluded by Scheduler v1 because status is WAITING_REPLY."
+        }
+      ],
+      "buyerAvailability": [
+        {
+          "id": "buyer-availability-581b137e",
+          "date": "2026-06-15",
+          "startTime": "09:00",
+          "endTime": "12:30",
+          "preference": "PREFERRED",
+          "note": "Buyer prefers morning viewings."
+        },
+        {
+          "id": "buyer-availability-f9d2c6e8",
+          "date": "2026-06-15",
+          "startTime": "14:00",
+          "endTime": "17:00",
+          "preference": "AVAILABLE",
+          "note": "Afternoon backup window."
+        }
+      ],
+      "opposingAgentAvailability": [
+        {
+          "id": "opposing-availability-4cdd839e",
+          "listingId": "listing-9af1b96c",
+          "agentName": "Daniel Lim",
+          "slots": [
+            {
+              "date": "2026-06-15",
+              "startTime": "09:00",
+              "endTime": "10:15"
+            },
+            {
+              "date": "2026-06-15",
+              "startTime": "14:00",
+              "endTime": "14:45"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T14:24:55.799Z",
+          "source": "CALL"
+        },
+        {
+          "id": "opposing-availability-28123c3c",
+          "listingId": "listing-fe9bd779",
+          "agentName": "Priya Nair",
+          "slots": [
+            {
+              "date": "2026-06-15",
+              "startTime": "10:45",
+              "endTime": "12:00"
+            },
+            {
+              "date": "2026-06-15",
+              "startTime": "15:00",
+              "endTime": "16:00"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T14:24:55.804Z",
+          "source": "WHATSAPP"
+        },
+        {
+          "id": "opposing-availability-8c9f5c0f",
+          "listingId": "listing-01965c5e",
+          "agentName": "Sarah Koh",
+          "slots": [
+            {
+              "date": "2026-06-15",
+              "startTime": "18:00",
+              "endTime": "19:00"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T14:24:55.808Z",
+          "source": "SMS"
+        },
+        {
+          "id": "opposing-availability-8c74099c",
+          "listingId": "listing-616119a0",
+          "agentName": "Aaron Goh",
+          "slots": [
+            {
+              "date": "2026-06-15",
+              "startTime": "11:50",
+              "endTime": "12:05"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T14:24:55.813Z",
+          "source": "EMAIL"
+        },
+        {
+          "id": "opposing-availability-75d8369c",
+          "listingId": "listing-a42b93be",
+          "agentName": "Melissa Tan",
+          "slots": [
+            {
+              "date": "2026-06-15",
+              "startTime": "09:30",
+              "endTime": "10:30"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T14:24:55.818Z",
+          "source": "MANUAL"
+        }
+      ],
+      "coordinationEvents": [
+        {
+          "id": "coordination-event-77ab7dcd",
+          "tourId": "tour-c2aad9b3",
+          "listingId": "listing-9af1b96c",
+          "kind": "MESSAGE",
+          "senderRole": "OPPOSING_AGENT",
+          "source": "WHATSAPP",
+          "body": "9am or 2pm works for Orchard View.",
+          "summary": "Daniel offered 9am and 2pm.",
+          "parsedIntent": "PROPOSED_TIME",
+          "relatedStatus": "AVAILABLE_SLOTS_RECEIVED",
+          "occurredAt": "2026-06-10T03:00:00.000Z",
+          "createdAt": "2026-04-22T14:24:55.823Z",
+          "updatedAt": "2026-04-22T14:24:55.823Z"
+        },
+        {
+          "id": "coordination-event-cd003dc5",
+          "tourId": "tour-c2aad9b3",
+          "listingId": "listing-fe9bd779",
+          "kind": "NOTE",
+          "senderRole": "BUYER_AGENT",
+          "source": "MANUAL",
+          "body": "Priya prefers WhatsApp confirmation after proposed route is ready.",
+          "summary": "Confirm River Valley after route review.",
+          "occurredAt": "2026-04-22T14:24:55.827Z",
+          "createdAt": "2026-04-22T14:24:55.827Z",
+          "updatedAt": "2026-04-22T14:24:55.827Z"
+        }
+      ],
+      "schedule": [
+        {
+          "id": "schedule-0639b225",
+          "listingId": "listing-9af1b96c",
+          "startAt": "2026-06-15T09:00:00+08:00",
+          "endAt": "2026-06-15T09:30:00+08:00",
+          "travelBufferMinutes": 0,
+          "status": "PROPOSED"
+        },
+        {
+          "id": "schedule-93fe0582",
+          "listingId": "listing-fe9bd779",
+          "startAt": "2026-06-15T10:45:00+08:00",
+          "endAt": "2026-06-15T11:15:00+08:00",
+          "travelBufferMinutes": 15,
+          "status": "PROPOSED"
+        }
+      ],
+      "exceptions": [],
+      "createdAt": "2026-04-22T14:24:55.743Z",
+      "updatedAt": "2026-04-22T14:25:07.806Z"
+    },
+    {
+      "id": "tour-eaa98d6a",
+      "buyerName": "Milestone 6 Smoke Buyer",
+      "buyerPhone": "+65 9000 6666",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-06-01",
+      "neighborhoods": [
+        "Orchard"
+      ],
+      "nextAction": "Smoke test scheduler",
+      "listings": [
+        {
+          "id": "listing-49f679a2",
+          "title": "A First Schedulable",
+          "address": "1 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666",
+          "notes": "Existing listing API still works"
+        },
+        {
+          "id": "listing-3895a96e",
+          "title": "B Second Schedulable",
+          "address": "2 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666"
+        },
+        {
+          "id": "listing-bf1f248a",
+          "title": "C No Opposing",
+          "address": "3 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666"
+        },
+        {
+          "id": "listing-eb7f0466",
+          "title": "D No Overlap",
+          "address": "4 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666"
+        },
+        {
+          "id": "listing-5e5681aa",
+          "title": "E Waiting Reply",
+          "address": "5 Smoke Road",
+          "district": "",
+          "status": "WAITING_REPLY",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666",
+          "notes": "Still not schedulable"
+        },
+        {
+          "id": "listing-ef7ad880",
+          "title": "F Insufficient",
+          "address": "6 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666"
+        },
+        {
+          "id": "listing-b95b5d17",
+          "title": "Z Conflict",
+          "address": "7 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666"
+        }
+      ],
+      "buyerAvailability": [
+        {
+          "id": "buyer-availability-3be0d599",
+          "date": "2026-06-01",
+          "startTime": "09:00",
+          "endTime": "12:00",
+          "preference": "PREFERRED",
+          "note": "Scheduler smoke availability"
+        }
+      ],
+      "opposingAgentAvailability": [
+        {
+          "id": "opposing-availability-8234bdea",
+          "listingId": "listing-49f679a2",
+          "agentName": "Smoke Opposing Agent",
+          "slots": [
+            {
+              "date": "2026-06-01",
+              "startTime": "09:00",
+              "endTime": "10:30"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T14:00:08.853Z",
+          "source": "MANUAL"
+        },
+        {
+          "id": "opposing-availability-d82b554e",
+          "listingId": "listing-3895a96e",
+          "agentName": "Smoke Opposing Agent",
+          "slots": [
+            {
+              "date": "2026-06-01",
+              "startTime": "10:45",
+              "endTime": "12:00"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T14:00:08.856Z",
+          "source": "MANUAL"
+        },
+        {
+          "id": "opposing-availability-6daf6d7e",
+          "listingId": "listing-eb7f0466",
+          "agentName": "Smoke Opposing Agent",
+          "slots": [
+            {
+              "date": "2026-06-01",
+              "startTime": "13:00",
+              "endTime": "14:00"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T14:00:08.861Z",
+          "source": "MANUAL"
+        },
+        {
+          "id": "opposing-availability-c6aff39f",
+          "listingId": "listing-ef7ad880",
+          "agentName": "Smoke Opposing Agent",
+          "slots": [
+            {
+              "date": "2026-06-01",
+              "startTime": "09:15",
+              "endTime": "09:30"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T14:00:08.864Z",
+          "source": "MANUAL"
+        },
+        {
+          "id": "opposing-availability-e971668a",
+          "listingId": "listing-b95b5d17",
+          "agentName": "Smoke Opposing Agent",
+          "slots": [
+            {
+              "date": "2026-06-01",
+              "startTime": "09:00",
+              "endTime": "09:30"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T14:00:08.867Z",
+          "source": "MANUAL"
+        }
+      ],
+      "coordinationEvents": [
+        {
+          "id": "coordination-event-a702c05f",
+          "tourId": "tour-eaa98d6a",
+          "listingId": "listing-49f679a2",
+          "kind": "NOTE",
+          "senderRole": "BUYER_AGENT",
+          "source": "MANUAL",
+          "body": "Scheduler smoke note",
+          "occurredAt": "2026-04-22T14:00:08.900Z",
+          "createdAt": "2026-04-22T14:00:08.900Z",
+          "updatedAt": "2026-04-22T14:00:08.918Z",
+          "summary": "Scheduler smoke summary"
+        }
+      ],
+      "schedule": [
+        {
+          "id": "schedule-ea9a0739",
+          "listingId": "listing-49f679a2",
+          "startAt": "2026-06-01T09:00:00+08:00",
+          "endAt": "2026-06-01T09:30:00+08:00",
+          "travelBufferMinutes": 0,
+          "status": "PROPOSED"
+        },
+        {
+          "id": "schedule-76ea505f",
+          "listingId": "listing-3895a96e",
+          "startAt": "2026-06-01T10:45:00+08:00",
+          "endAt": "2026-06-01T11:15:00+08:00",
+          "travelBufferMinutes": 15,
+          "status": "PROPOSED"
+        }
+      ],
+      "exceptions": [],
+      "createdAt": "2026-04-22T14:00:08.710Z",
+      "updatedAt": "2026-04-22T14:00:08.940Z"
+    },
+    {
+      "id": "tour-b237146a",
+      "buyerName": "Milestone 6 Smoke Buyer",
+      "buyerPhone": "+65 9000 6666",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-06-01",
+      "neighborhoods": [
+        "Orchard"
+      ],
+      "nextAction": "Smoke test scheduler",
+      "listings": [
+        {
+          "id": "listing-f93c0466",
+          "title": "A First Schedulable",
+          "address": "1 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666",
+          "notes": "Existing listing API still works"
+        },
+        {
+          "id": "listing-02bd20a5",
+          "title": "B Second Schedulable",
+          "address": "2 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666"
+        },
+        {
+          "id": "listing-fa692fad",
+          "title": "C No Opposing",
+          "address": "3 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666"
+        },
+        {
+          "id": "listing-6cd2c956",
+          "title": "D No Overlap",
+          "address": "4 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666"
+        },
+        {
+          "id": "listing-4d1862d0",
+          "title": "E Waiting Reply",
+          "address": "5 Smoke Road",
+          "district": "",
+          "status": "WAITING_REPLY",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666",
+          "notes": "Still not schedulable"
+        },
+        {
+          "id": "listing-987b5767",
+          "title": "F Insufficient",
+          "address": "6 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666"
+        },
+        {
+          "id": "listing-ebee1e8e",
+          "title": "Z Conflict",
+          "address": "7 Smoke Road",
+          "district": "",
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Smoke Opposing Agent",
+          "opposingAgentPhone": "+65 9000 6666"
+        }
+      ],
+      "buyerAvailability": [
+        {
+          "id": "buyer-availability-d18e14c7",
+          "date": "2026-06-01",
+          "startTime": "09:00",
+          "endTime": "12:00",
+          "preference": "PREFERRED",
+          "note": "Scheduler smoke availability"
+        }
+      ],
+      "opposingAgentAvailability": [
+        {
+          "id": "opposing-availability-0db1f2f3",
+          "listingId": "listing-f93c0466",
+          "agentName": "Smoke Opposing Agent",
+          "slots": [
+            {
+              "date": "2026-06-01",
+              "startTime": "09:00",
+              "endTime": "10:30"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T13:58:45.490Z",
+          "source": "MANUAL"
+        },
+        {
+          "id": "opposing-availability-7780e9c3",
+          "listingId": "listing-02bd20a5",
+          "agentName": "Smoke Opposing Agent",
+          "slots": [
+            {
+              "date": "2026-06-01",
+              "startTime": "10:45",
+              "endTime": "12:00"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T13:58:45.494Z",
+          "source": "MANUAL"
+        },
+        {
+          "id": "opposing-availability-d1ceb221",
+          "listingId": "listing-6cd2c956",
+          "agentName": "Smoke Opposing Agent",
+          "slots": [
+            {
+              "date": "2026-06-01",
+              "startTime": "13:00",
+              "endTime": "14:00"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T13:58:45.497Z",
+          "source": "MANUAL"
+        },
+        {
+          "id": "opposing-availability-996b7aca",
+          "listingId": "listing-987b5767",
+          "agentName": "Smoke Opposing Agent",
+          "slots": [
+            {
+              "date": "2026-06-01",
+              "startTime": "09:15",
+              "endTime": "09:30"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T13:58:45.501Z",
+          "source": "MANUAL"
+        },
+        {
+          "id": "opposing-availability-165a70d6",
+          "listingId": "listing-ebee1e8e",
+          "agentName": "Smoke Opposing Agent",
+          "slots": [
+            {
+              "date": "2026-06-01",
+              "startTime": "09:00",
+              "endTime": "09:30"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-22T13:58:45.505Z",
+          "source": "MANUAL"
+        }
+      ],
+      "coordinationEvents": [
+        {
+          "id": "coordination-event-72805832",
+          "tourId": "tour-b237146a",
+          "listingId": "listing-f93c0466",
+          "kind": "NOTE",
+          "senderRole": "BUYER_AGENT",
+          "source": "MANUAL",
+          "body": "Scheduler smoke note",
+          "occurredAt": "2026-04-22T13:58:45.537Z",
+          "createdAt": "2026-04-22T13:58:45.537Z",
+          "updatedAt": "2026-04-22T13:58:45.556Z",
+          "summary": "Scheduler smoke summary"
+        }
+      ],
+      "schedule": [
+        {
+          "id": "schedule-115d0f47",
+          "listingId": "listing-ebee1e8e",
+          "startAt": "2026-06-01T09:00:00+08:00",
+          "endAt": "2026-06-01T09:30:00+08:00",
+          "travelBufferMinutes": 0,
+          "status": "PROPOSED"
+        },
+        {
+          "id": "schedule-8fe55d78",
+          "listingId": "listing-f93c0466",
+          "startAt": "2026-06-01T09:45:00+08:00",
+          "endAt": "2026-06-01T10:15:00+08:00",
+          "travelBufferMinutes": 15,
+          "status": "PROPOSED"
+        },
+        {
+          "id": "schedule-85b5f052",
+          "listingId": "listing-02bd20a5",
+          "startAt": "2026-06-01T10:45:00+08:00",
+          "endAt": "2026-06-01T11:15:00+08:00",
+          "travelBufferMinutes": 15,
+          "status": "PROPOSED"
+        }
+      ],
+      "exceptions": [],
+      "createdAt": "2026-04-22T13:58:45.347Z",
+      "updatedAt": "2026-04-22T13:58:45.613Z"
+    },
+    {
+      "id": "tour-92a745b2",
+      "buyerName": "Milestone 5 Smoke Buyer",
+      "buyerPhone": "+65 9000 5555",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-05-05",
+      "neighborhoods": [
+        "Newton"
+      ],
+      "nextAction": "Smoke test tour basics updated",
+      "listings": [],
+      "buyerAvailability": [
+        {
+          "id": "buyer-availability-0814adc5",
+          "date": "2026-05-05",
+          "startTime": "09:00",
+          "endTime": "12:00",
+          "preference": "PREFERRED",
+          "note": "Existing buyer availability API still works"
+        }
+      ],
+      "opposingAgentAvailability": [],
+      "coordinationEvents": [],
+      "schedule": [],
+      "exceptions": [],
+      "createdAt": "2026-04-21T14:35:43.636Z",
+      "updatedAt": "2026-04-21T14:35:43.898Z"
+    },
+    {
+      "id": "tour-c98383d3",
+      "buyerName": "Milestone 4 Smoke Buyer",
+      "buyerPhone": "+65 9000 4444",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-05-04",
+      "neighborhoods": [
+        "Orchard"
+      ],
+      "nextAction": "Smoke test tour basics updated",
+      "listings": [],
+      "buyerAvailability": [
+        {
+          "id": "buyer-availability-6736a695",
+          "date": "2026-05-04",
+          "startTime": "15:00",
+          "endTime": "18:00",
+          "preference": "PREFERRED",
+          "note": "Existing buyer availability API still works"
+        }
+      ],
+      "opposingAgentAvailability": [],
+      "schedule": [],
+      "exceptions": [],
+      "createdAt": "2026-04-21T14:07:19.360Z",
+      "updatedAt": "2026-04-21T14:07:19.657Z",
+      "coordinationEvents": []
+    },
+    {
+      "id": "tour-c6d1bb60",
+      "buyerName": "Availability Smoke Buyer",
+      "buyerPhone": "+65 9000 2222",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-05-10",
+      "neighborhoods": [],
+      "nextAction": "Add buyer availability and shortlisted listings",
+      "listings": [],
+      "buyerAvailability": [
+        {
+          "id": "buyer-availability-d4af3b38",
+          "date": "2026-05-12",
+          "startTime": "19:00",
+          "endTime": "21:00",
+          "preference": "LAST_RESORT"
+        }
+      ],
+      "opposingAgentAvailability": [],
+      "schedule": [],
+      "exceptions": [],
+      "createdAt": "2026-04-21T13:25:57.142Z",
+      "updatedAt": "2026-04-21T13:25:57.183Z",
+      "coordinationEvents": []
+    },
+    {
+      "id": "tour-77930681",
+      "buyerName": "Smoke Buyer Updated",
+      "buyerPhone": "+65 9000 0000",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-05-01",
+      "neighborhoods": [
+        "Orchard"
+      ],
+      "nextAction": "Call buyer to confirm shortlist",
+      "listings": [],
+      "buyerAvailability": [],
+      "opposingAgentAvailability": [],
+      "schedule": [],
+      "exceptions": [],
+      "createdAt": "2026-04-20T14:41:05.469Z",
+      "updatedAt": "2026-04-20T14:41:05.546Z",
+      "coordinationEvents": []
+    },
+    {
+      "id": "tour-4fac8dbe",
+      "buyerName": "Smoke Buyer",
+      "buyerPhone": "+65 9000 0000",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-05-01",
+      "neighborhoods": [
+        "Orchard"
+      ],
+      "nextAction": "Add buyer availability and shortlisted listings",
+      "listings": [],
+      "buyerAvailability": [],
+      "opposingAgentAvailability": [],
+      "schedule": [],
+      "exceptions": [],
+      "createdAt": "2026-04-20T14:40:09.092Z",
+      "updatedAt": "2026-04-20T14:40:09.092Z",
+      "coordinationEvents": []
+    },
+    {
+      "id": "tour-df4c1d03",
+      "buyerName": "Smoke Buyer",
+      "buyerPhone": "+65 9000 0000",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-05-01",
+      "neighborhoods": [
+        "Orchard"
+      ],
+      "nextAction": "Add buyer availability and shortlisted listings",
+      "listings": [],
+      "buyerAvailability": [],
+      "opposingAgentAvailability": [],
+      "schedule": [],
+      "exceptions": [],
+      "createdAt": "2026-04-20T14:39:07.080Z",
+      "updatedAt": "2026-04-20T14:39:07.080Z",
+      "coordinationEvents": []
+    },
+    {
+      "id": "tour-17ca02fb",
+      "buyerName": "Smoke Buyer Updated",
+      "buyerPhone": "+65 9000 0000",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "status": "DRAFT",
+      "targetDate": "2026-05-01",
+      "neighborhoods": [
+        "Orchard"
+      ],
+      "nextAction": "Call buyer to confirm shortlist",
+      "listings": [],
+      "buyerAvailability": [],
+      "opposingAgentAvailability": [],
+      "schedule": [],
+      "exceptions": [],
+      "createdAt": "2026-04-20T14:38:19.410Z",
+      "updatedAt": "2026-04-20T14:38:19.602Z",
+      "coordinationEvents": []
+    },
+    {
+      "id": "tour-1001",
+      "buyerName": "Alicia Tan",
+      "buyerPhone": "+65 9123 4455",
+      "status": "COORDINATING",
+      "targetDate": "2026-04-24",
+      "neighborhoods": [
+        "River Valley",
+        "Orchard",
+        "Newton"
+      ],
+      "nextAction": "Chase 2 listing agents for Friday afternoon slots",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "listings": [
+        {
+          "id": "listing-101",
+          "title": "Valley Park 3BR",
+          "address": "473 River Valley Road",
+          "district": "D10",
+          "askingPrice": 2380000,
+          "bedrooms": 3,
+          "bathrooms": 2,
+          "status": "WAITING_REPLY",
+          "opposingAgentName": "Daniel Lim",
+          "opposingAgentPhone": "+65 9000 1111",
+          "notes": "Seller prefers viewings after 2 PM."
+        },
+        {
+          "id": "listing-102",
+          "title": "Scotts Square 2BR",
+          "address": "6 Scotts Road",
+          "district": "D09",
+          "askingPrice": 3100000,
+          "bedrooms": 2,
+          "bathrooms": 2,
+          "status": "AVAILABLE_SLOTS_RECEIVED",
+          "opposingAgentName": "Priya Nair",
+          "opposingAgentPhone": "+65 9000 2222"
+        },
+        {
+          "id": "listing-103",
+          "title": "Newton Suites 3BR",
+          "address": "60 Newton Road",
+          "district": "D11",
+          "askingPrice": 2650000,
+          "bedrooms": 3,
+          "bathrooms": 3,
+          "status": "NEEDS_REVIEW",
+          "opposingAgentName": "Ethan Wong",
+          "opposingAgentPhone": "+65 9000 3333",
+          "notes": "Slot conflicts with buyer school pickup."
+        }
+      ],
+      "buyerAvailability": [
+        {
+          "id": "buyer-slot-1",
+          "date": "2026-04-24",
+          "startTime": "13:00",
+          "endTime": "17:30",
+          "preference": "PREFERRED",
+          "note": "Buyer wants central locations first."
+        },
+        {
+          "id": "buyer-slot-2",
+          "date": "2026-04-25",
+          "startTime": "10:00",
+          "endTime": "12:30",
+          "preference": "AVAILABLE"
+        }
+      ],
+      "opposingAgentAvailability": [
+        {
+          "id": "oa-slot-1",
+          "agentName": "Priya Nair",
+          "listingId": "listing-102",
+          "slots": [
+            {
+              "date": "2026-04-24",
+              "startTime": "14:30",
+              "endTime": "15:00"
+            },
+            {
+              "date": "2026-04-24",
+              "startTime": "16:00",
+              "endTime": "16:30"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-19T10:15:00.000Z",
+          "source": "MANUAL"
+        }
+      ],
+      "schedule": [
+        {
+          "id": "schedule-1",
+          "listingId": "listing-102",
+          "startAt": "2026-04-24T14:30:00+08:00",
+          "endAt": "2026-04-24T15:00:00+08:00",
+          "travelBufferMinutes": 20,
+          "status": "PROPOSED"
+        }
+      ],
+      "exceptions": [
+        {
+          "id": "exception-1",
+          "tourId": "tour-1001",
+          "listingId": "listing-101",
+          "title": "Waiting for availability",
+          "detail": "Daniel has not confirmed whether Friday afternoon is possible.",
+          "severity": "MEDIUM",
+          "owner": "OPPOSING_AGENT",
+          "resolved": false
+        },
+        {
+          "id": "exception-2",
+          "tourId": "tour-1001",
+          "listingId": "listing-103",
+          "title": "Buyer timing conflict",
+          "detail": "Available Newton slot overlaps with school pickup window.",
+          "severity": "HIGH",
+          "owner": "BUYER_AGENT",
+          "resolved": false
+        }
+      ],
+      "createdAt": "2026-04-18T03:20:00.000Z",
+      "updatedAt": "2026-04-19T11:00:00.000Z",
+      "coordinationEvents": []
+    },
+    {
+      "id": "tour-1002",
+      "buyerName": "Marcus Lee",
+      "buyerPhone": "+65 9888 7301",
+      "status": "READY_TO_SCHEDULE",
+      "targetDate": "2026-04-26",
+      "neighborhoods": [
+        "Tanjong Pagar",
+        "Marina Bay"
+      ],
+      "nextAction": "Review proposed order and send final confirmation",
+      "agent": {
+        "id": "agent-001",
+        "name": "Maya Chen",
+        "phone": "+65 8222 1010",
+        "email": "maya.chen@example.com",
+        "agencyName": "Northstar Realty"
+      },
+      "listings": [
+        {
+          "id": "listing-201",
+          "title": "Wallich Residence 1BR",
+          "address": "3 Wallich Street",
+          "district": "D02",
+          "askingPrice": 1980000,
+          "bedrooms": 1,
+          "bathrooms": 1,
+          "status": "SCHEDULED",
+          "opposingAgentName": "Sarah Koh",
+          "opposingAgentPhone": "+65 9111 8888"
+        },
+        {
+          "id": "listing-202",
+          "title": "Marina One 2BR",
+          "address": "21 Marina Way",
+          "district": "D01",
+          "askingPrice": 2850000,
+          "bedrooms": 2,
+          "bathrooms": 2,
+          "status": "SCHEDULED",
+          "opposingAgentName": "Aaron Goh",
+          "opposingAgentPhone": "+65 9222 9999"
+        }
+      ],
+      "buyerAvailability": [
+        {
+          "id": "buyer-slot-3",
+          "date": "2026-04-26",
+          "startTime": "09:30",
+          "endTime": "12:30",
+          "preference": "PREFERRED"
+        }
+      ],
+      "opposingAgentAvailability": [
+        {
+          "id": "oa-slot-2",
+          "agentName": "Sarah Koh",
+          "listingId": "listing-201",
+          "slots": [
+            {
+              "date": "2026-04-26",
+              "startTime": "10:00",
+              "endTime": "10:30"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-19T08:45:00.000Z",
+          "source": "CALL"
+        },
+        {
+          "id": "oa-slot-3",
+          "agentName": "Aaron Goh",
+          "listingId": "listing-202",
+          "slots": [
+            {
+              "date": "2026-04-26",
+              "startTime": "11:15",
+              "endTime": "11:45"
+            }
+          ],
+          "lastUpdatedAt": "2026-04-19T09:12:00.000Z",
+          "source": "SMS"
+        }
+      ],
+      "schedule": [
+        {
+          "id": "schedule-2",
+          "listingId": "listing-201",
+          "startAt": "2026-04-26T10:00:00+08:00",
+          "endAt": "2026-04-26T10:30:00+08:00",
+          "travelBufferMinutes": 25,
+          "status": "PROPOSED"
+        },
+        {
+          "id": "schedule-3",
+          "listingId": "listing-202",
+          "startAt": "2026-04-26T11:15:00+08:00",
+          "endAt": "2026-04-26T11:45:00+08:00",
+          "travelBufferMinutes": 0,
+          "status": "PROPOSED"
+        }
+      ],
+      "exceptions": [
+        {
+          "id": "exception-3",
+          "tourId": "tour-1002",
+          "title": "Confirmation message not sent",
+          "detail": "Schedule is ready, but buyer and listing agents have not received final confirmations.",
+          "severity": "LOW",
+          "owner": "BUYER_AGENT",
+          "resolved": false
+        }
+      ],
+      "createdAt": "2026-04-17T05:10:00.000Z",
+      "updatedAt": "2026-04-19T09:30:00.000Z",
+      "coordinationEvents": []
+    }
+  ]
+}

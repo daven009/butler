@@ -1,0 +1,19 @@
+{
+  "profile": {
+    "name": "Maya Chen Test",
+    "agency": "PropNex",
+    "branch": "Tampines Branch",
+    "license": "R058123G",
+    "whatsappConnected": true,
+    "phone": "+65 8222 1010"
+  },
+  "settings": {
+    "tone": "friendly",
+    "followUpCadenceHours": 24,
+    "autoProfile": true,
+    "voiceTranscription": true,
+    "autoHandoffOnPricing": true,
+    "discloseAIIdentity": true,
+    "defaultViewingDuration": 30
+  }
+}
