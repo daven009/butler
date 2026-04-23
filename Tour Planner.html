@@ -1,0 +1,1326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>butler.ai — Tour Planner (mobile)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #F5F3EF; font-family: 'Inter', -apple-system, system-ui, sans-serif; color:#222; -webkit-font-smoothing: antialiased; }
+  button { font-family: inherit; }
+  input, textarea { font-family: inherit; }
+
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+  @keyframes slidein { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: translateY(0); } }
+  .spinner { width:14px; height:14px; border:2px solid #fff5; border-top-color:#fff; border-radius:50%; animation: spin .8s linear infinite; display:inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* board layout */
+  .board {
+    padding: 48px 40px 80px;
+    min-height: 100vh;
+  }
+  .board-head { max-width: 1400px; margin: 0 auto 36px; }
+  .board-head .eyebrow { font-size:11px; font-weight:700; letter-spacing:0.8px; color:#FF385C; text-transform:uppercase; }
+  .board-head h1 { font-family:'Playfair Display', Georgia, serif; font-size:44px; font-weight:600; letter-spacing:-0.8px; margin: 8px 0 6px; line-height:1.05; }
+  .board-head p { font-size:15px; color:#717171; margin:0; max-width: 620px; line-height:1.5; }
+
+  .phone-grid {
+    max-width: 1400px; margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 48px 36px;
+    justify-items: center;
+  }
+  .phone-cell { display:flex; flex-direction:column; align-items:center; gap:14px; }
+  .phone-cell .cap-eyebrow { font-size:10px; font-weight:700; letter-spacing:0.9px; color:#FF385C; text-transform:uppercase; }
+  .phone-cell .cap-title { font-family:'Playfair Display', Georgia, serif; font-size:19px; font-weight:600; letter-spacing:-0.3px; text-align:center; }
+  .phone-cell .cap-sub { font-size:12.5px; color:#717171; text-align:center; max-width:280px; line-height:1.45; }
+  .phone-cell.active .cap-eyebrow { color:#222; }
+  .phone-cell.active .cap-title::after {
+    content: ' · live'; color:#FF385C; font-family:Inter, sans-serif; font-size:11px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase;
+  }
+
+  @media (max-width: 1100px) { .phone-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 720px) { .phone-grid { grid-template-columns: 1fr; gap:40px; } .board { padding: 32px 16px 60px; } .board-head h1 { font-size:32px; } }
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+// ============================================================
+// ios-frame.jsx — iOS 26 (Liquid Glass) device frame
+// ============================================================
+function IOSStatusBar({ dark = false, time = '9:41' }) {
+  const c = dark ? '#fff' : '#000';
+  return (
+    <div style={{
+      display: 'flex', gap: 154, alignItems: 'center', justifyContent: 'center',
+      padding: '21px 24px 19px', boxSizing: 'border-box',
+      position: 'relative', zIndex: 20, width: '100%',
+    }}>
+      <div style={{ flex: 1, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: 1.5 }}>
+        <span style={{ fontFamily: '-apple-system, "SF Pro", system-ui', fontWeight: 590, fontSize: 17, lineHeight: '22px', color: c }}>{time}</span>
+      </div>
+      <div style={{ flex: 1, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, paddingTop: 1, paddingRight: 1 }}>
+        <svg width="19" height="12" viewBox="0 0 19 12">
+          <rect x="0" y="7.5" width="3.2" height="4.5" rx="0.7" fill={c}/>
+          <rect x="4.8" y="5" width="3.2" height="7" rx="0.7" fill={c}/>
+          <rect x="9.6" y="2.5" width="3.2" height="9.5" rx="0.7" fill={c}/>
+          <rect x="14.4" y="0" width="3.2" height="12" rx="0.7" fill={c}/>
+        </svg>
+        <svg width="17" height="12" viewBox="0 0 17 12">
+          <path d="M8.5 3.2C10.8 3.2 12.9 4.1 14.4 5.6L15.5 4.5C13.7 2.7 11.2 1.5 8.5 1.5C5.8 1.5 3.3 2.7 1.5 4.5L2.6 5.6C4.1 4.1 6.2 3.2 8.5 3.2Z" fill={c}/>
+          <path d="M8.5 6.8C9.9 6.8 11.1 7.3 12 8.2L13.1 7.1C11.8 5.9 10.2 5.1 8.5 5.1C6.8 5.1 5.2 5.9 3.9 7.1L5 8.2C5.9 7.3 7.1 6.8 8.5 6.8Z" fill={c}/>
+          <circle cx="8.5" cy="10.5" r="1.5" fill={c}/>
+        </svg>
+        <svg width="27" height="13" viewBox="0 0 27 13">
+          <rect x="0.5" y="0.5" width="23" height="12" rx="3.5" stroke={c} strokeOpacity="0.35" fill="none"/>
+          <rect x="2" y="2" width="20" height="9" rx="2" fill={c}/>
+          <path d="M25 4.5V8.5C25.8 8.2 26.5 7.2 26.5 6.5C26.5 5.8 25.8 4.8 25 4.5Z" fill={c} fillOpacity="0.4"/>
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function IOSGlassPill({ children, dark = false, style = {} }) {
+  return (
+    <div style={{
+      height: 44, minWidth: 44, borderRadius: 9999,
+      position: 'relative', overflow: 'hidden',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      boxShadow: dark
+        ? '0 2px 6px rgba(0,0,0,0.35), 0 6px 16px rgba(0,0,0,0.2)'
+        : '0 1px 3px rgba(0,0,0,0.07), 0 3px 10px rgba(0,0,0,0.06)',
+      ...style,
+    }}>
+      <div style={{
+        position: 'absolute', inset: 0, borderRadius: 9999,
+        backdropFilter: 'blur(12px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(12px) saturate(180%)',
+        background: dark ? 'rgba(120,120,128,0.28)' : 'rgba(255,255,255,0.5)',
+      }} />
+      <div style={{
+        position: 'absolute', inset: 0, borderRadius: 9999,
+        boxShadow: dark
+          ? 'inset 1.5px 1.5px 1px rgba(255,255,255,0.15), inset -1px -1px 1px rgba(255,255,255,0.08)'
+          : 'inset 1.5px 1.5px 1px rgba(255,255,255,0.7), inset -1px -1px 1px rgba(255,255,255,0.4)',
+        border: dark ? '0.5px solid rgba(255,255,255,0.15)' : '0.5px solid rgba(0,0,0,0.06)',
+      }} />
+      <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', padding: '0 4px' }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function IOSNavBar({ title = 'Title', dark = false, trailingIcon = true }) {
+  const muted = dark ? 'rgba(255,255,255,0.6)' : '#404040';
+  const text = dark ? '#fff' : '#000';
+  const pillIcon = (content) => (
+    <IOSGlassPill dark={dark}>
+      <div style={{ width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {content}
+      </div>
+    </IOSGlassPill>
+  );
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 62, paddingBottom: 10, position: 'relative', zIndex: 5 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px' }}>
+        {pillIcon(
+          <svg width="12" height="20" viewBox="0 0 12 20" fill="none" style={{ marginLeft: -1 }}>
+            <path d="M10 2L2 10l8 8" stroke={muted} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        )}
+        {trailingIcon && pillIcon(
+          <svg width="22" height="6" viewBox="0 0 22 6">
+            <circle cx="3" cy="3" r="2.5" fill={muted}/>
+            <circle cx="11" cy="3" r="2.5" fill={muted}/>
+            <circle cx="19" cy="3" r="2.5" fill={muted}/>
+          </svg>
+        )}
+      </div>
+      <div style={{ padding: '0 16px', fontFamily: '-apple-system, system-ui', fontSize: 34, fontWeight: 700, lineHeight: '41px', color: text, letterSpacing: 0.4 }}>{title}</div>
+    </div>
+  );
+}
+
+function IOSListRow({ title, detail, icon, chevron = true, isLast = false, dark = false }) {
+  const text = dark ? '#fff' : '#000';
+  const sec = dark ? 'rgba(235,235,245,0.6)' : 'rgba(60,60,67,0.6)';
+  const ter = dark ? 'rgba(235,235,245,0.3)' : 'rgba(60,60,67,0.3)';
+  const sep = dark ? 'rgba(84,84,88,0.65)' : 'rgba(60,60,67,0.12)';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', minHeight: 52, padding: '0 16px', position: 'relative', fontFamily: '-apple-system, system-ui', fontSize: 17, letterSpacing: -0.43 }}>
+      {icon && <div style={{ width: 30, height: 30, borderRadius: 7, background: icon, marginRight: 12, flexShrink: 0 }} />}
+      <div style={{ flex: 1, color: text }}>{title}</div>
+      {detail && <span style={{ color: sec, marginRight: 6 }}>{detail}</span>}
+      {chevron && (
+        <svg width="8" height="14" viewBox="0 0 8 14" style={{ flexShrink: 0 }}>
+          <path d="M1 1l6 6-6 6" stroke={ter} strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      )}
+      {!isLast && <div style={{ position: 'absolute', bottom: 0, right: 0, left: icon ? 58 : 16, height: 0.5, background: sep }} />}
+    </div>
+  );
+}
+
+function IOSList({ header, children, dark = false }) {
+  const hc = dark ? 'rgba(235,235,245,0.6)' : 'rgba(60,60,67,0.6)';
+  const bg = dark ? '#1C1C1E' : '#fff';
+  return (
+    <div>
+      {header && <div style={{ fontFamily: '-apple-system, system-ui', fontSize: 13, color: hc, textTransform: 'uppercase', padding: '8px 36px 6px', letterSpacing: -0.08 }}>{header}</div>}
+      <div style={{ background: bg, borderRadius: 26, margin: '0 16px', overflow: 'hidden' }}>{children}</div>
+    </div>
+  );
+}
+
+function IOSDevice({ children, width = 402, height = 874, dark = false, title, keyboard = false }) {
+  return (
+    <div style={{
+      width, height, borderRadius: 48, overflow: 'hidden', position: 'relative',
+      background: dark ? '#000' : '#F2F2F7',
+      boxShadow: '0 40px 80px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.12)',
+      fontFamily: '-apple-system, system-ui, sans-serif', WebkitFontSmoothing: 'antialiased',
+    }}>
+      <div style={{ position: 'absolute', top: 11, left: '50%', transform: 'translateX(-50%)', width: 126, height: 37, borderRadius: 24, background: '#000', zIndex: 50 }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 }}>
+        <IOSStatusBar dark={dark} />
+      </div>
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+        {title !== undefined && <IOSNavBar title={title} dark={dark} />}
+        <div style={{ flex: 1, overflow: 'auto' }}>{children}</div>
+        {keyboard && <IOSKeyboard dark={dark} />}
+      </div>
+      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 60, height: 34, display: 'flex', justifyContent: 'center', alignItems: 'flex-end', paddingBottom: 8, pointerEvents: 'none' }}>
+        <div style={{ width: 139, height: 5, borderRadius: 100, background: dark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.25)' }} />
+      </div>
+    </div>
+  );
+}
+
+function IOSKeyboard({ dark = false }) {
+  const glyph = dark ? 'rgba(255,255,255,0.7)' : '#595959';
+  const sugg = dark ? 'rgba(255,255,255,0.6)' : '#333';
+  const keyBg = dark ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.85)';
+  const icons = {
+    shift: <svg width="19" height="17" viewBox="0 0 19 17"><path d="M9.5 1L1 9.5h4.5V16h8V9.5H18L9.5 1z" fill={glyph}/></svg>,
+    del: <svg width="23" height="17" viewBox="0 0 23 17"><path d="M7 1h13a2 2 0 012 2v11a2 2 0 01-2 2H7l-6-7.5L7 1z" fill="none" stroke={glyph} strokeWidth="1.6" strokeLinejoin="round"/><path d="M10 5l7 7M17 5l-7 7" stroke={glyph} strokeWidth="1.6" strokeLinecap="round"/></svg>,
+    ret: <svg width="20" height="14" viewBox="0 0 20 14"><path d="M18 1v6H4m0 0l4-4M4 7l4 4" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  };
+  const key = (content, { w, flex, ret, fs = 25, k } = {}) => (
+    <div key={k} style={{
+      height: 42, borderRadius: 8.5, flex: flex ? 1 : undefined, width: w, minWidth: 0,
+      background: ret ? '#08f' : keyBg, boxShadow: '0 1px 0 rgba(0,0,0,0.075)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: '-apple-system, "SF Compact", system-ui', fontSize: fs, fontWeight: 458, color: ret ? '#fff' : glyph,
+    }}>{content}</div>
+  );
+  const row = (keys, pad = 0) => (
+    <div style={{ display: 'flex', gap: 6.5, justifyContent: 'center', padding: `0 ${pad}px` }}>
+      {keys.map(l => key(l, { flex: true, k: l }))}
+    </div>
+  );
+  return (
+    <div style={{ position: 'relative', zIndex: 15, borderRadius: 27, overflow: 'hidden', padding: '11px 0 2px', display: 'flex', flexDirection: 'column', alignItems: 'center', boxShadow: dark ? '0 -2px 20px rgba(0,0,0,0.09)' : '0 -1px 6px rgba(0,0,0,0.018), 0 -3px 20px rgba(0,0,0,0.012)' }}>
+      <div style={{ position: 'absolute', inset: 0, borderRadius: 27, backdropFilter: 'blur(12px) saturate(180%)', WebkitBackdropFilter: 'blur(12px) saturate(180%)', background: dark ? 'rgba(120,120,128,0.14)' : 'rgba(255,255,255,0.25)' }} />
+      <div style={{ position: 'absolute', inset: 0, borderRadius: 27, boxShadow: dark ? 'inset 1.5px 1.5px 1px rgba(255,255,255,0.15)' : 'inset 1.5px 1.5px 1px rgba(255,255,255,0.7), inset -1px -1px 1px rgba(255,255,255,0.4)', border: dark ? '0.5px solid rgba(255,255,255,0.15)' : '0.5px solid rgba(0,0,0,0.06)', pointerEvents: 'none' }} />
+      <div style={{ display: 'flex', gap: 20, alignItems: 'center', padding: '8px 22px 13px', width: '100%', boxSizing: 'border-box', position: 'relative' }}>
+        {['"The"', 'the', 'to'].map((w, i) => (
+          <React.Fragment key={i}>
+            {i > 0 && <div style={{ width: 1, height: 25, background: '#ccc', opacity: 0.3 }} />}
+            <div style={{ flex: 1, textAlign: 'center', fontFamily: '-apple-system, system-ui', fontSize: 17, color: sugg, letterSpacing: -0.43, lineHeight: '22px' }}>{w}</div>
+          </React.Fragment>
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 13, padding: '0 6.5px', width: '100%', boxSizing: 'border-box', position: 'relative' }}>
+        {row(['q','w','e','r','t','y','u','i','o','p'])}
+        {row(['a','s','d','f','g','h','j','k','l'], 20)}
+        <div style={{ display: 'flex', gap: 14.25, alignItems: 'center' }}>
+          {key(icons.shift, { w: 45, k: 'shift' })}
+          <div style={{ display: 'flex', gap: 6.5, flex: 1 }}>
+            {['z','x','c','v','b','n','m'].map(l => key(l, { flex: true, k: l }))}
+          </div>
+          {key(icons.del, { w: 45, k: 'del' })}
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {key('ABC', { w: 92.25, fs: 18, k: 'abc' })}
+          {key('', { flex: true, k: 'space' })}
+          {key(icons.ret, { w: 92.25, ret: true, k: 'ret' })}
+        </div>
+      </div>
+      <div style={{ height: 56, width: '100%', position: 'relative' }} />
+    </div>
+  );
+}
+
+// ============================================================
+// data.jsx — Singapore property listings, agents, threads
+// ============================================================
+const LISTINGS = [
+  { id:'L1', name:'Tampines Trilliant', unit:'#05-11', price:'S$3,400', bed:'3BR', area:'Tampines', mrt:'Tampines · 4min', tags:['Pet-friendly','Angsana Pri 1km','South-facing'], agent:'Rachel Ng', phone:'+65 9222 2222', cluster:0, color:'#E07A5F' },
+  { id:'L2', name:'Tampines Court',     unit:'#12-08', price:'S$3,250', bed:'3BR', area:'Tampines', mrt:'Tampines · 7min', tags:['Extra store','Renovated'], agent:'Kenneth Soh', phone:'+65 9333 3333', cluster:0, color:'#E07A5F' },
+  { id:'L3', name:'Bedok Residences',   unit:'#09-22', price:'S$3,600', bed:'3BR', area:'Bedok', mrt:'Bedok · 2min',     tags:['High floor','Sea view'], agent:'Sarah Lim', phone:'+65 9444 4444', cluster:1, color:'#4C8577' },
+  { id:'L4', name:'Bedok Grove',        unit:'#03-05', price:'S$3,150', bed:'3BR', area:'Bedok', mrt:'Bedok · 6min',     tags:['Garden','Ground floor'], agent:'James Wong', phone:'+65 9555 5555', cluster:1, color:'#4C8577' },
+  { id:'L5', name:'Queenstown View',    unit:'#03-08', price:'S$3,500', bed:'3BR', area:'Queenstown', mrt:'Queenstown · 3min', tags:['Nanyang Pri 1km','one-north 28min'], agent:'Priya Menon', phone:'+65 9666 6666', cluster:2, color:'#4A6F8C' },
+  { id:'L6', name:'Commonwealth Towers',unit:'#18-04', price:'S$3,800', bed:'3BR', area:'Queenstown', mrt:'Queenstown · 5min', tags:['Pool view','High floor'], agent:'Daniel Koh', phone:'+65 9777 7777', cluster:2, color:'#4A6F8C' },
+];
+
+const TOURS = [
+  { id:'T1', buyer:'Chen family', avatar:'陈', type:'3BR Rental', status:'coordinating', progress:4, total:6, updated:'2 min ago', color:'#FF385C', preview:'AI confirmed 4 of 6 viewings · Sarah Lim needs your call' },
+  { id:'T2', buyer:'Rishi Patel', avatar:'R',  type:'Condo · Sale',  status:'searching',    progress:0, total:0, updated:'1h ago',   color:'#00A699', preview:'Awaiting buyer to pick shortlist' },
+  { id:'T3', buyer:'Hazel Koh',   avatar:'H',  type:'HDB · Rental', status:'confirmed',    progress:3, total:3, updated:'yesterday', color:'#FC642D', preview:'Tour confirmed for Sun 7pm · sent to buyer' },
+  { id:'T4', buyer:'Ng family',   avatar:'N',  type:'Landed · Sale', status:'planning',     progress:0, total:0, updated:'2d ago',   color:'#914669', preview:'Shortlist sent · waiting on availability' },
+];
+
+const THREADS = [
+  { id:'th1', agent:'Rachel Ng',   avatar:'R', unit:'Tampines Trilliant', status:'confirmed', color:'#E07A5F', time:'Sat 10:00am', last:'Yep, see u!' },
+  { id:'th2', agent:'Kenneth Soh', avatar:'K', unit:'Tampines Court',     status:'confirmed', color:'#E07A5F', time:'Sat 10:30am', last:'ok confirmed' },
+  { id:'th3', agent:'Sarah Lim',   avatar:'S', unit:'Bedok Residences',   status:'exception', color:'#D93A4E', time:'Conflict',     last:'only sun afternoon' },
+  { id:'th4', agent:'James Wong',  avatar:'J', unit:'Bedok Grove',        status:'confirmed', color:'#4C8577', time:'Sat 11:45am', last:'sure' },
+  { id:'th5', agent:'Priya Menon', avatar:'P', unit:'Queenstown View',    status:'confirmed', color:'#4A6F8C', time:'Sun 7:00pm', last:'confirmed 👍' },
+  { id:'th6', agent:'Daniel Koh',  avatar:'D', unit:'Commonwealth Towers',status:'confirmed', color:'#4A6F8C', time:'Sun 7:45pm', last:'confirmed' },
+];
+
+const CHAT_RACHEL = [
+  { from:'ai',   text:"Hi Rachel! I'm an AI assistant helping David Tan with scheduling. Is your unit at Tampines Trilliant #05-11 still available for rent?", ts:'Fri 4:14 PM' },
+  { from:'them', text:"Yes still available!", ts:'Fri 4:21 PM' },
+  { from:'ai',   text:"Great. My client: Senior Manager at a tech company, Singapore PR, couple with 5yo, 2yr lease, move-in June, no pets. OK with landlord?", ts:'Fri 4:22 PM' },
+  { from:'them', text:"Sounds fine, owner ok", ts:'Fri 5:10 PM' },
+  { from:'ai',   text:"Thanks! Which viewing slots work?\n1) Sat 9am–12pm\n2) Sat 3pm–6pm\n3) Sun 12pm–3pm", ts:'Fri 5:11 PM' },
+  { from:'them', text:"1 and 3 work", ts:'Fri 5:40 PM' },
+  { from:'ai',   text:"Can we lock in Sat 10:00am? I'm pairing this with Tampines Court right after (3min walk).", ts:'Sat 8:30 AM' },
+  { from:'them', text:"Yep, see u!", ts:'Sat 8:42 AM' },
+];
+
+// ============================================================
+// screens1.jsx — Home, Tour Detail, Chat
+// ============================================================
+const { useState, useEffect, useRef } = React;
+
+const AB = {
+  rausch: '#FF385C',
+  babu: '#00A699',
+  hack: '#FC642D',
+  beach: '#FFB400',
+  arches: '#914669',
+  ink: '#222222',
+  gray: '#717171',
+  gray2: '#B0B0B0',
+  border: '#EBEBEB',
+  bg: '#F7F7F7',
+  white: '#FFFFFF',
+};
+
+function Avatar({ label, color, size=40 }) {
+  return <div style={{
+    width:size, height:size, borderRadius:'50%', background:color||'#E4E4E4',
+    color:'#fff', display:'grid', placeItems:'center',
+    fontWeight:600, fontSize:size*0.38, flexShrink:0,
+  }}>{label}</div>;
+}
+
+function Chip({ children, tone='default' }) {
+  const styles = {
+    default: { bg:'#F0F0F0', fg:AB.ink },
+    green:   { bg:'#E9F5F1', fg:'#006A5B' },
+    red:     { bg:'#FEE7EC', fg:'#C13584' },
+    amber:   { bg:'#FFF4DB', fg:'#8B5A00' },
+  };
+  const s = styles[tone];
+  return <span style={{
+    display:'inline-flex', alignItems:'center', gap:4,
+    padding:'4px 10px', borderRadius:999, background:s.bg, color:s.fg,
+    fontSize:12, fontWeight:500, whiteSpace:'nowrap',
+  }}>{children}</span>;
+}
+
+function StatusDot({ status }) {
+  const colors = { coordinating:AB.rausch, searching:AB.babu, confirmed:'#00A699', planning:AB.beach };
+  return <span style={{
+    width:8, height:8, borderRadius:'50%', background:colors[status]||'#ccc',
+    display:'inline-block', boxShadow:`0 0 0 3px ${(colors[status]||'#ccc')}22`,
+  }}/>;
+}
+
+const iconBtn = {
+  width:40, height:40, borderRadius:'50%', border:`1px solid ${AB.border}`,
+  background:'#fff', display:'grid', placeItems:'center', cursor:'pointer',
+  position:'relative',
+};
+
+function BottomTabs({ active, nav }) {
+  const tabs = [
+    { k:'home',   label:'Tours',   icon:(c)=> <svg width="22" height="22" viewBox="0 0 24 24" fill={active==='home'?c:'none'} stroke={c} strokeWidth="1.8"><path d="M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1V11z"/></svg> },
+    { k:'search', label:'Search',  icon:(c)=> <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg> },
+    { k:'notif',  label:'Inbox',   icon:(c)=> <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> },
+    { k:'settings',label:'Profile',icon:(c)=> <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg> },
+  ];
+  return (
+    <div style={{
+      position:'absolute', left:0, right:0, bottom:0, zIndex:20,
+      padding:'10px 8px 30px', background:AB.white,
+      borderTop:`1px solid ${AB.border}`,
+      display:'flex', justifyContent:'space-around',
+    }}>
+      {tabs.map(t => {
+        const on = active === t.k;
+        const c = on ? AB.rausch : AB.gray;
+        return (
+          <button key={t.k} onClick={()=>nav(t.k)} style={{
+            border:0, background:'transparent', display:'flex', flexDirection:'column',
+            alignItems:'center', gap:3, padding:'4px 12px', cursor:'pointer',
+          }}>
+            {t.icon(c)}
+            <span style={{ fontSize:10.5, color:c, fontWeight:on?600:500 }}>{t.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ScreenHome({ nav }) {
+  return (
+    <div style={{ background:AB.white, minHeight:'100%' }}>
+      <div style={{ padding:'56px 24px 0' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <div>
+            <div style={{ fontSize:13, color:AB.gray, fontWeight:500 }}>Good morning, David</div>
+            <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:30, fontWeight:600, letterSpacing:-0.5, marginTop:2 }}>Your tours</div>
+          </div>
+          <div style={{ display:'flex', gap:10 }}>
+            <button onClick={()=>nav('notif')} style={iconBtn}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={AB.ink} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+              <span style={{ position:'absolute', top:6, right:6, width:9, height:9, borderRadius:'50%', background:AB.rausch, border:'2px solid #fff' }}/>
+            </button>
+            <button onClick={()=>nav('settings')} style={iconBtn}>
+              <Avatar label="D" color={AB.ink} size={32}/>
+            </button>
+          </div>
+        </div>
+
+        <button onClick={()=>nav('search')} style={{
+          display:'flex', alignItems:'center', gap:12,
+          width:'100%', marginTop:18, padding:'14px 18px',
+          border:`1px solid ${AB.border}`, borderRadius:40, background:AB.white,
+          boxShadow:'0 2px 8px rgba(0,0,0,0.06)', textAlign:'left',
+        }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={AB.ink} strokeWidth="2.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <div>
+            <div style={{ fontWeight:600, fontSize:14 }}>Start a new tour</div>
+            <div style={{ fontSize:12, color:AB.gray }}>Paste a PropertyGuru link · describe what they want</div>
+          </div>
+        </button>
+      </div>
+
+      <div style={{ padding:'22px 24px 8px' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:12 }}>
+          <div style={{ fontWeight:600, fontSize:16 }}>Active</div>
+          <div style={{ fontSize:13, color:AB.gray }}>3 tours</div>
+        </div>
+
+        <button onClick={()=>nav('tour')} style={{
+          width:'100%', textAlign:'left', padding:0,
+          background:AB.white, border:`1px solid ${AB.border}`,
+          borderRadius:16, overflow:'hidden', boxShadow:'0 2px 12px rgba(0,0,0,0.04)',
+        }}>
+          <div style={{ height:4, background:AB.border, position:'relative' }}>
+            <div style={{ position:'absolute', inset:0, width:'67%', background:AB.rausch, borderRadius:2 }}/>
+          </div>
+          <div style={{ padding:'16px 18px' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+              <StatusDot status="coordinating"/>
+              <div style={{ fontSize:12, color:AB.gray, textTransform:'uppercase', letterSpacing:0.5, fontWeight:600 }}>AI COORDINATING · 2 min ago</div>
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+              <Avatar label="陈" color={AB.rausch} size={44}/>
+              <div>
+                <div style={{ fontWeight:600, fontSize:17 }}>Chen family</div>
+                <div style={{ fontSize:13, color:AB.gray }}>3BR rental · 6 shortlisted</div>
+              </div>
+            </div>
+            <div style={{ marginTop:12, display:'flex', gap:6 }}>
+              {[0,1,2,3,4,5].map(i => (
+                <div key={i} style={{
+                  flex:1, height:6, borderRadius:3,
+                  background: i < 4 ? '#00A699' : (i === 4 ? AB.rausch : AB.border),
+                }}/>
+              ))}
+            </div>
+            <div style={{ marginTop:10, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <div style={{ fontSize:13, color:AB.gray }}>4 confirmed · 1 needs you · 1 pending</div>
+              <div style={{ fontSize:13, fontWeight:600, color:AB.rausch }}>Open →</div>
+            </div>
+          </div>
+        </button>
+      </div>
+
+      <div style={{ padding:'12px 24px 120px' }}>
+        {TOURS.slice(1).map(t => (
+          <div key={t.id} style={{ display:'flex', gap:12, alignItems:'center', padding:'14px 0', borderTop:`1px solid ${AB.border}` }}>
+            <Avatar label={t.avatar} color={t.color} size={44}/>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+                <div style={{ fontWeight:600, fontSize:15 }}>{t.buyer}</div>
+                <div style={{ fontSize:11, color:AB.gray }}>{t.updated}</div>
+              </div>
+              <div style={{ fontSize:13, color:AB.gray, marginTop:2 }}>{t.type}</div>
+              <div style={{ fontSize:12.5, color:AB.ink, marginTop:4, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                <StatusDot status={t.status}/> <span style={{ marginLeft:6 }}>{t.preview}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <BottomTabs active="home" nav={nav}/>
+    </div>
+  );
+}
+
+function LiveTicker({ tick }) {
+  const events = [
+    { agent:'Daniel Koh',  text:'confirmed Sun 7:45pm', tone:'green' },
+    { agent:'Sarah Lim',   text:'proposed Sun 2pm · flagged conflict', tone:'red' },
+    { agent:'James Wong',  text:'owner approved the profile',   tone:'green' },
+    { agent:'Rachel Ng',   text:'confirmed Sat 10:00am',        tone:'green' },
+    { agent:'Priya Menon', text:'replied to follow-up',         tone:'amber' },
+  ];
+  const idx = tick % events.length;
+  const e = events[idx];
+  return (
+    <div key={idx} style={{
+      background:AB.white, border:`1px solid ${AB.border}`,
+      borderRadius:14, padding:'12px 14px',
+      display:'flex', alignItems:'center', gap:10,
+      animation:'slidein .4s ease-out',
+    }}>
+      <div style={{
+        width:28, height:28, borderRadius:'50%',
+        background: e.tone==='green' ? '#E9F5F1' : e.tone==='red' ? '#FEE7EC' : '#FFF4DB',
+        display:'grid', placeItems:'center', flexShrink:0,
+      }}>
+        {e.tone==='green' && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#006A5B" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+        {e.tone==='red' && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#C13584" strokeWidth="3"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.1"/></svg>}
+        {e.tone==='amber' && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8B5A00" strokeWidth="2.4" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>}
+      </div>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:13.5 }}><strong>{e.agent}</strong> {e.text}</div>
+        <div style={{ fontSize:11, color:AB.gray, marginTop:1 }}>just now</div>
+      </div>
+    </div>
+  );
+}
+
+function ScreenTour({ nav }) {
+  const [tick, setTick] = useState(0);
+  useEffect(()=>{
+    const id = setInterval(()=> setTick(t=>t+1), 1600);
+    return ()=> clearInterval(id);
+  }, []);
+
+  return (
+    <div style={{ background:AB.bg, minHeight:'100%' }}>
+      <div style={{ background:AB.white, padding:'56px 20px 16px', borderBottom:`1px solid ${AB.border}` }}>
+        <button onClick={()=>nav('home')} style={{ ...iconBtn, width:36, height:36, marginBottom:14 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={AB.ink} strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <Avatar label="陈" color={AB.rausch} size={52}/>
+          <div style={{ flex:1 }}>
+            <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:24, fontWeight:600, letterSpacing:-0.3 }}>Chen family</div>
+            <div style={{ fontSize:13, color:AB.gray, marginTop:2 }}>3BR rental · move-in June · pet-friendly</div>
+          </div>
+        </div>
+        <div style={{ marginTop:16 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:AB.gray, marginBottom:6 }}>
+            <span>Coordination progress</span>
+            <span style={{ color:AB.ink, fontWeight:600 }}>4 of 6 confirmed</span>
+          </div>
+          <div style={{ display:'flex', gap:4 }}>
+            {[0,1,2,3,4,5].map(i => (
+              <div key={i} style={{ flex:1, height:8, borderRadius:4, background: i<4 ? '#00A699' : (i===4 ? AB.rausch : AB.border), transition:'background .3s' }}/>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding:'16px 20px 8px' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+          <span style={{ width:8, height:8, borderRadius:'50%', background:AB.rausch, boxShadow:`0 0 0 4px ${AB.rausch}22`, animation:'pulse 1.4s infinite' }}/>
+          <div style={{ fontSize:11, fontWeight:700, letterSpacing:0.8, color:AB.rausch }}>AI WORKING</div>
+          <div style={{ fontSize:11, color:AB.gray, marginLeft:'auto' }}>via +65 9111 1111</div>
+        </div>
+        <LiveTicker tick={tick}/>
+      </div>
+
+      <div style={{ padding:'8px 20px 20px' }}>
+        <div style={{ fontSize:11, fontWeight:700, letterSpacing:0.8, color:AB.gray, marginBottom:8, textTransform:'uppercase' }}>Listings · 6</div>
+        <div style={{ background:AB.white, borderRadius:16, overflow:'hidden', border:`1px solid ${AB.border}` }}>
+          {THREADS.map((th, i) => (
+            <button key={th.id} onClick={()=> nav(th.status==='exception' ? 'decision' : 'chat')} style={{
+              width:'100%', textAlign:'left', border:0, background:'transparent', cursor:'pointer',
+              padding:'14px 16px', display:'flex', gap:12, alignItems:'center',
+              borderBottom: i<THREADS.length-1 ? `1px solid ${AB.border}` : 'none',
+            }}>
+              <Avatar label={th.avatar} color={th.color} size={42}/>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
+                  <div style={{ fontWeight:600, fontSize:14.5 }}>{th.unit}</div>
+                  {th.status==='confirmed' && <div style={{ fontSize:12, color:AB.ink, fontWeight:600 }}>{th.time}</div>}
+                  {th.status==='exception' && <Chip tone="red">Needs you</Chip>}
+                </div>
+                <div style={{ fontSize:12.5, color:AB.gray, marginTop:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                  {th.agent} · "{th.last}"
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding:'8px 20px 40px' }}>
+        <button onClick={()=>nav('itinerary')} style={{
+          width:'100%', padding:'15px', border:0, borderRadius:12,
+          background:AB.ink, color:'#fff', fontSize:15, fontWeight:600,
+          display:'flex', justifyContent:'center', alignItems:'center', gap:8,
+          cursor:'pointer',
+        }}>
+          Preview final itinerary
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ScreenChat({ nav }) {
+  const [takenOver, setTakenOver] = useState(false);
+  const [draft, setDraft] = useState('');
+  const bodyRef = useRef(null);
+  useEffect(()=>{ if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; },[]);
+
+  return (
+    <div style={{ background:AB.bg, minHeight:'100%', display:'flex', flexDirection:'column' }}>
+      <div style={{ background:AB.white, padding:'54px 16px 12px', borderBottom:`1px solid ${AB.border}`, display:'flex', alignItems:'center', gap:10 }}>
+        <button onClick={()=>nav('tour')} style={{ ...iconBtn, width:36, height:36 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={AB.ink} strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <Avatar label="R" color={'#E07A5F'} size={36}/>
+        <div style={{ flex:1 }}>
+          <div style={{ fontWeight:600, fontSize:14.5 }}>Rachel Ng</div>
+          <div style={{ fontSize:11.5, color:AB.gray }}>Tampines Trilliant · +65 9222 2222</div>
+        </div>
+        <div style={{ padding:'5px 10px', borderRadius:999, background:'#E9F5F1', color:'#006A5B', fontSize:11, fontWeight:600 }}>
+          {takenOver ? 'YOU' : 'AI'}
+        </div>
+      </div>
+
+      {!takenOver && (
+        <div style={{ padding:'10px 16px', background:'#FFF9F0', borderBottom:`1px solid ${AB.border}`, display:'flex', alignItems:'center', gap:10, fontSize:12 }}>
+          <span style={{ width:7, height:7, borderRadius:'50%', background:AB.rausch }}/>
+          <span style={{ color:AB.ink }}>AI is handling this thread. Everything sends via your number.</span>
+        </div>
+      )}
+
+      <div ref={bodyRef} style={{ flex:1, overflowY:'auto', padding:'16px', display:'flex', flexDirection:'column', gap:8 }}>
+        {CHAT_RACHEL.map((m,i) => (
+          <div key={i} style={{ display:'flex', flexDirection:'column', alignItems: m.from==='ai' ? 'flex-end' : 'flex-start' }}>
+            <div style={{
+              maxWidth:'82%', padding:'10px 13px', borderRadius:18,
+              background: m.from==='ai' ? AB.ink : AB.white,
+              color: m.from==='ai' ? '#fff' : AB.ink,
+              border: m.from==='them' ? `1px solid ${AB.border}` : 'none',
+              fontSize:13.5, lineHeight:1.45, whiteSpace:'pre-wrap',
+              borderBottomRightRadius: m.from==='ai' ? 4 : 18,
+              borderBottomLeftRadius:  m.from==='them' ? 4 : 18,
+            }}>
+              {m.from==='ai' && <div style={{ fontSize:10, opacity:.6, marginBottom:3, letterSpacing:0.4 }}>AI · BUTLER</div>}
+              {m.text}
+            </div>
+            <div style={{ fontSize:10.5, color:AB.gray, marginTop:4, padding:'0 6px' }}>{m.ts}</div>
+          </div>
+        ))}
+        {takenOver && (
+          <div style={{ alignSelf:'center', padding:'6px 14px', borderRadius:999, background:'#FFF4DB', color:'#8B5A00', fontSize:11.5, fontWeight:500, margin:'10px 0' }}>
+            — You've taken over · AI paused —
+          </div>
+        )}
+      </div>
+
+      {!takenOver ? (
+        <div style={{ padding:'10px 16px 30px', background:AB.white, borderTop:`1px solid ${AB.border}` }}>
+          <button onClick={()=>setTakenOver(true)} style={{
+            width:'100%', padding:'13px', border:`1.5px solid ${AB.ink}`, borderRadius:12,
+            background:'#fff', fontSize:14, fontWeight:600, color:AB.ink, cursor:'pointer',
+            display:'flex', justifyContent:'center', alignItems:'center', gap:8,
+          }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={AB.ink} strokeWidth="2.2"><path d="M20 14.66V20a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5.34"/><path d="m18 2 4 4-10 10H8v-4L18 2z"/></svg>
+            Take over conversation
+          </button>
+          <div style={{ fontSize:11, color:AB.gray, textAlign:'center', marginTop:6 }}>AI stops · you reply directly</div>
+        </div>
+      ) : (
+        <div style={{ padding:'8px 10px 26px', background:AB.white, borderTop:`1px solid ${AB.border}`, display:'flex', gap:8, alignItems:'center' }}>
+          <input value={draft} onChange={e=>setDraft(e.target.value)} placeholder="Message Rachel…"
+            style={{ flex:1, padding:'11px 14px', border:`1px solid ${AB.border}`, borderRadius:999, fontSize:14, background:AB.bg, outline:'none' }}/>
+          <button style={{ width:40, height:40, borderRadius:'50%', border:0, background:AB.rausch, cursor:'pointer', display:'grid', placeItems:'center' }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// screens2.jsx — Search, Decision, Itinerary, Buyer, Settings, Notif, Onboarding
+// ============================================================
+
+function ScreenSearch({ nav }) {
+  const [mode, setMode] = useState('prompt');
+  const [query, setQuery] = useState('3BR near Tampines MRT, under S$3,500, pet-friendly, within Angsana Primary 1km');
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState(false);
+
+  function runSearch() {
+    setLoading(true);
+    setTimeout(()=>{ setLoading(false); setResults(true); }, 1400);
+  }
+
+  return (
+    <div style={{ background:AB.white, minHeight:'100%' }}>
+      <div style={{ padding:'54px 20px 8px', display:'flex', alignItems:'center', gap:10 }}>
+        <button onClick={()=>nav('home')} style={{ ...iconBtn, width:36, height:36 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={AB.ink} strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div style={{ fontWeight:600, fontSize:16 }}>New search</div>
+      </div>
+      <div style={{ padding:'8px 20px' }}>
+        <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:26, fontWeight:600, letterSpacing:-0.4, lineHeight:1.2 }}>
+          What are the Chens<br/>looking for?
+        </div>
+      </div>
+
+      <div style={{ padding:'14px 20px 0', display:'flex', gap:6 }}>
+        <div style={{ display:'flex', background:AB.bg, borderRadius:999, padding:3, width:'100%' }}>
+          {[['prompt','Describe'],['pg','Paste PG link']].map(([k,l])=>(
+            <button key={k} onClick={()=>setMode(k)} style={{
+              flex:1, padding:'8px 0', border:0, borderRadius:999, cursor:'pointer',
+              background: mode===k ? AB.white : 'transparent',
+              fontWeight:600, fontSize:13,
+              boxShadow: mode===k ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+            }}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding:'16px 20px' }}>
+        {mode==='prompt' ? (
+          <textarea value={query} onChange={e=>setQuery(e.target.value)} rows={4} style={{
+            width:'100%', padding:'14px', border:`1px solid ${AB.border}`, borderRadius:14,
+            fontSize:14, resize:'none', outline:'none', fontFamily:'inherit', lineHeight:1.5,
+          }}/>
+        ) : (
+          <input value="propertyguru.com.sg/property-for-rent?market…" readOnly style={{
+            width:'100%', padding:'14px', border:`1px solid ${AB.border}`, borderRadius:14,
+            fontSize:13, outline:'none', fontFamily:'ui-monospace, monospace',
+          }}/>
+        )}
+
+        <div style={{ marginTop:14, fontSize:12, color:AB.gray, fontWeight:600, letterSpacing:0.5, textTransform:'uppercase' }}>Extra filters</div>
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginTop:8 }}>
+          <Chip>🏫 MOE school 1km</Chip>
+          <Chip>🚇 Near MRT</Chip>
+          <Chip>🐾 Pets ok</Chip>
+          <Chip>☀️ South-facing</Chip>
+        </div>
+
+        <button onClick={runSearch} style={{
+          width:'100%', padding:'15px', marginTop:20,
+          border:0, borderRadius:12, cursor:'pointer',
+          background:AB.rausch, color:'#fff', fontSize:15, fontWeight:600,
+          display:'flex', justifyContent:'center', alignItems:'center', gap:8,
+        }}>
+          {loading ? (<><span className="spinner"/> Running AI search…</>) : 'Search with AI'}
+        </button>
+      </div>
+
+      {results && (
+        <div style={{ padding:'8px 20px 100px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:8, marginBottom:12 }}>
+            <div style={{ fontWeight:600, fontSize:15 }}>28 listings matched</div>
+            <div style={{ fontSize:12, color:AB.gray }}>ranked by AI fit</div>
+          </div>
+          {LISTINGS.slice(0,3).map(l => (
+            <div key={l.id} style={{ display:'flex', gap:12, padding:'12px 0', borderTop:`1px solid ${AB.border}` }}>
+              <div style={{
+                width:80, height:80, borderRadius:14, flexShrink:0,
+                background:`linear-gradient(135deg, ${l.color}20, ${l.color}45)`,
+                position:'relative', overflow:'hidden',
+              }}>
+                <div style={{ position:'absolute', inset:0, backgroundImage:`repeating-linear-gradient(-45deg, ${l.color}18 0 6px, transparent 6px 12px)` }}/>
+                <div style={{ position:'absolute', bottom:6, left:8, fontSize:10, color:l.color, fontWeight:700, letterSpacing:0.5, textTransform:'uppercase' }}>{l.area}</div>
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontWeight:600, fontSize:14.5 }}>{l.name}</div>
+                <div style={{ fontSize:12, color:AB.gray, marginTop:1 }}>{l.unit} · {l.bed} · {l.price}/mo</div>
+                <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginTop:6 }}>
+                  <Chip tone="green">✓ pet-friendly</Chip>
+                  <Chip>{l.mrt}</Chip>
+                </div>
+                <div style={{ fontSize:11, color:AB.gray, marginTop:6 }}>
+                  AI match <strong style={{ color:AB.ink }}>92%</strong> · <em>"south-facing unit with morning sun"</em>
+                </div>
+              </div>
+            </div>
+          ))}
+          <button onClick={()=>nav('tour')} style={{
+            width:'100%', marginTop:18, padding:'14px',
+            background:AB.ink, color:'#fff', border:0, borderRadius:12,
+            fontWeight:600, fontSize:14, cursor:'pointer',
+          }}>Shortlist 6 & send to Chen family</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const btnPrimary = {
+  padding:'14px', border:0, borderRadius:12, background:AB.ink, color:'#fff',
+  fontSize:14, fontWeight:600, cursor:'pointer', textAlign:'center',
+};
+const btnOutline = {
+  padding:'12px', border:`1px solid ${AB.border}`, borderRadius:12,
+  background:'#fff', color:AB.ink, fontSize:14, fontWeight:600, cursor:'pointer',
+};
+
+function ScreenDecision({ nav }) {
+  const [resolved, setResolved] = useState(null);
+  return (
+    <div style={{ background:AB.bg, minHeight:'100%' }}>
+      <div style={{ padding:'54px 20px 12px', background:AB.white, borderBottom:`1px solid ${AB.border}`, display:'flex', alignItems:'center', gap:10 }}>
+        <button onClick={()=>nav('tour')} style={{ ...iconBtn, width:36, height:36 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={AB.ink} strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div style={{ fontWeight:600, fontSize:16 }}>Needs your decision</div>
+      </div>
+
+      <div style={{ padding:'18px 20px' }}>
+        <div style={{ background:AB.white, borderRadius:18, padding:'20px', border:`1px solid ${AB.border}`, boxShadow:'0 2px 12px rgba(0,0,0,0.04)' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+            <span style={{ fontSize:18 }}>⚠️</span>
+            <div style={{ fontSize:11, fontWeight:700, color:AB.rausch, letterSpacing:0.8, textTransform:'uppercase' }}>Fell in the cracks</div>
+          </div>
+          <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:22, fontWeight:600, letterSpacing:-0.3 }}>
+            Bedok Residences · #09-22
+          </div>
+          <div style={{ fontSize:13, color:AB.gray, marginTop:4 }}>Sarah Lim · +65 9444 4444</div>
+
+          <div style={{ marginTop:16, padding:'14px', background:AB.bg, borderRadius:12, fontSize:13.5, lineHeight:1.5 }}>
+            Sarah Lim only has <strong>Sun 2:00 PM</strong> available — but that block is already filled with your Tampines viewings. A manual decision is needed.
+          </div>
+
+          {!resolved && (
+            <div style={{ marginTop:16, display:'flex', flexDirection:'column', gap:8 }}>
+              <button onClick={()=>setResolved('squeeze')} style={btnPrimary}>
+                Squeeze into Sun 2 PM block
+                <span style={{ fontSize:12, opacity:.7, fontWeight:400, display:'block', marginTop:3 }}>I'll drop the Tampines Court slot</span>
+              </button>
+              <button onClick={()=>setResolved('repropose')} style={btnOutline}>Propose new times to Sarah</button>
+              <button onClick={()=>setResolved('drop')} style={{ ...btnOutline, color:AB.gray }}>Drop this unit</button>
+            </div>
+          )}
+          {resolved && (
+            <div style={{ marginTop:16, padding:'14px', background:'#E9F5F1', borderRadius:12, color:'#006A5B', fontSize:13.5, fontWeight:500 }}>
+              ✓ Got it. {resolved==='squeeze' && 'AI is rescheduling Tampines Court and confirming Sun 2 PM.'}
+              {resolved==='repropose' && 'AI is reaching out to Sarah with three new times.'}
+              {resolved==='drop' && 'Unit removed from the tour. Chen family will be notified.'}
+            </div>
+          )}
+        </div>
+
+        <div style={{ marginTop:16, padding:16, background:AB.white, borderRadius:16, border:`1px solid ${AB.border}` }}>
+          <div style={{ fontSize:11, fontWeight:700, color:AB.gray, letterSpacing:0.7, textTransform:'uppercase', marginBottom:10 }}>Why AI flagged this</div>
+          <div style={{ display:'flex', flexDirection:'column', gap:10, fontSize:13, color:AB.ink, lineHeight:1.5 }}>
+            <div>→ Tampines cluster anchored at Sat 10 AM</div>
+            <div>→ Sun PM already has 2 Tampines viewings</div>
+            <div>→ Moving Bedok would add 22 min of driving</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StopRow({ time, ampm, addr, unit, agent, tags=[], transit, first, last }) {
+  return (
+    <div>
+      {transit && (
+        <div style={{ padding:'8px 16px 8px 88px', fontSize:11, color:AB.gray, background:AB.bg, borderTop:`1px solid ${AB.border}`, borderBottom:`1px solid ${AB.border}` }}>
+          ↓ {transit}
+        </div>
+      )}
+      <div style={{ display:'flex', gap:14, padding:'14px 16px', borderTop: !first && !transit ? `1px solid ${AB.border}` : 'none' }}>
+        <div style={{ width:58, flexShrink:0 }}>
+          <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:22, fontWeight:600, letterSpacing:-0.3, lineHeight:1 }}>{time}</div>
+          <div style={{ fontSize:10.5, color:AB.gray, marginTop:2, fontWeight:600 }}>{ampm}</div>
+        </div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontWeight:600, fontSize:14.5 }}>{addr}</div>
+          <div style={{ fontSize:12, color:AB.gray }}>{unit} · {agent}</div>
+          <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginTop:6 }}>
+            {tags.map((t,i)=>(
+              <Chip key={i} tone={t.startsWith('✓') ? 'green' : 'default'}>{t}</Chip>
+            ))}
+          </div>
+        </div>
+        <div style={{ fontSize:11, color:AB.gray, flexShrink:0, paddingTop:4 }}>30 min</div>
+      </div>
+    </div>
+  );
+}
+
+function ScreenItinerary({ nav }) {
+  return (
+    <div style={{ background:AB.bg, minHeight:'100%' }}>
+      <div style={{ padding:'54px 20px 12px', background:AB.white, borderBottom:`1px solid ${AB.border}`, display:'flex', alignItems:'center', gap:10 }}>
+        <button onClick={()=>nav('tour')} style={{ ...iconBtn, width:36, height:36 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={AB.ink} strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div style={{ fontWeight:600, fontSize:16 }}>Itinerary</div>
+        <div style={{ marginLeft:'auto', padding:'4px 10px', background:'#E9F5F1', color:'#006A5B', borderRadius:999, fontSize:11, fontWeight:700, letterSpacing:0.5 }}>READY</div>
+      </div>
+
+      <div style={{ padding:'18px 20px 0' }}>
+        <div style={{ background:AB.white, borderRadius:18, padding:'18px', border:`1px solid ${AB.border}` }}>
+          <div style={{ fontSize:11, color:AB.gray, fontWeight:600, letterSpacing:0.7, textTransform:'uppercase' }}>Chen family · 3BR rental</div>
+          <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:24, fontWeight:600, letterSpacing:-0.3, marginTop:4 }}>
+            Sat 19 — Sun 20 Apr
+          </div>
+          <div style={{ fontSize:13, color:AB.gray, marginTop:2 }}>6 viewings · 2 days · across 3 neighbourhoods</div>
+
+          <div style={{ marginTop:14, background:AB.bg, borderRadius:12, padding:16, position:'relative', height:130 }}>
+            <svg viewBox="0 0 300 100" width="100%" height="100%" style={{ position:'absolute', inset:16, width:'calc(100% - 32px)' }}>
+              <path d="M20 70 C 60 30, 120 40, 170 55 C 220 70, 260 60, 280 45"
+                fill="none" stroke={AB.rausch} strokeWidth="1.8" strokeDasharray="4 3" strokeLinecap="round"/>
+              <g>
+                <circle cx="20" cy="70" r="8" fill={AB.rausch}/>
+                <text x="20" y="73" fontSize="9" fill="#fff" textAnchor="middle" fontWeight="700">1</text>
+                <text x="20" y="90" fontSize="8" fill={AB.gray} textAnchor="middle">Queenstown</text>
+              </g>
+              <g>
+                <circle cx="170" cy="55" r="8" fill={AB.rausch}/>
+                <text x="170" y="58" fontSize="9" fill="#fff" textAnchor="middle" fontWeight="700">3</text>
+                <text x="170" y="40" fontSize="8" fill={AB.gray} textAnchor="middle">Bedok</text>
+              </g>
+              <g>
+                <circle cx="280" cy="45" r="8" fill={AB.rausch}/>
+                <text x="280" y="48" fontSize="9" fill="#fff" textAnchor="middle" fontWeight="700">5</text>
+                <text x="280" y="30" fontSize="8" fill={AB.gray} textAnchor="middle">Tampines</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding:'16px 20px 0' }}>
+        <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:19, fontWeight:600, marginBottom:8 }}>Saturday · 19 April</div>
+        <div style={{ background:AB.white, borderRadius:16, overflow:'hidden', border:`1px solid ${AB.border}` }}>
+          <StopRow time="10:00" ampm="AM" addr="Tampines Trilliant" unit="#05-11" agent="Rachel Ng" tags={['✓ Pet-friendly','Tampines MRT 4min']} first/>
+          <StopRow time="10:30" ampm="AM" addr="Tampines Court"     unit="#12-08" agent="Kenneth Soh" tags={['Extra store']} transit="walk · 3 min"/>
+          <StopRow time="11:15" ampm="AM" addr="Bedok Residences"   unit="#09-22" agent="Sarah Lim"  tags={['High floor']} transit="drive · 15 min · PIE→ECP"/>
+          <StopRow time="11:45" ampm="AM" addr="Bedok Grove"        unit="#03-05" agent="James Wong" tags={['✓ Private garden']} transit="walk · 4 min" last/>
+        </div>
+      </div>
+
+      <div style={{ padding:'16px 20px 0' }}>
+        <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:19, fontWeight:600, marginBottom:8 }}>Sunday · 20 April</div>
+        <div style={{ background:AB.white, borderRadius:16, overflow:'hidden', border:`1px solid ${AB.border}` }}>
+          <StopRow time="7:00" ampm="PM" addr="Queenstown View" unit="#03-08" agent="Priya Menon"  tags={['✓ Nanyang Pri 1km']} first/>
+          <StopRow time="7:45" ampm="PM" addr="Commonwealth Towers" unit="#18-04" agent="Daniel Koh" tags={['Pool view']} transit="walk · 6 min" last/>
+        </div>
+      </div>
+
+      <div style={{ padding:'20px 20px 44px' }}>
+        <button onClick={()=>nav('buyer')} style={{
+          width:'100%', padding:'15px', border:0, borderRadius:12,
+          background:AB.rausch, color:'#fff', fontSize:15, fontWeight:600, cursor:'pointer',
+          display:'flex', justifyContent:'center', alignItems:'center', gap:8,
+        }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M17.5 14c-.3-.1-1.7-.8-2-.9-.3-.1-.4-.1-.6.1-.2.3-.7.9-.9 1.1-.2.2-.3.2-.6.1-1.2-.6-2.4-1.5-3.4-3-.3-.5 0-.5.3-1 .2-.2.4-.5.5-.8.1-.3 0-.5 0-.6-.1-.2-.6-1.5-.8-2-.2-.5-.4-.5-.6-.5H7.5c-.2 0-.5.1-.8.4-.3.3-1 1-1 2.4 0 1.4 1 2.8 1.2 3 .2.2 2 3 4.8 4.2 1.7.7 2.3.8 3.2.6.5-.1 1.7-.7 2-1.4.2-.6.2-1.2.2-1.3-.2-.2-.3-.3-.6-.4zM12 2C6.5 2 2 6.5 2 12c0 1.9.5 3.7 1.5 5.3L2 22l4.8-1.3c1.5.9 3.4 1.3 5.2 1.3 5.5 0 10-4.5 10-10S17.5 2 12 2z"/></svg>
+          Send to Chen family
+        </button>
+        <button style={{ ...btnOutline, width:'100%', marginTop:10 }}>Export as PDF</button>
+      </div>
+    </div>
+  );
+}
+
+function ScreenBuyer({ nav }) {
+  return (
+    <div style={{ background:AB.bg, minHeight:'100%' }}>
+      <div style={{ padding:'54px 20px 12px', background:AB.white, borderBottom:`1px solid ${AB.border}`, display:'flex', alignItems:'center', gap:10 }}>
+        <button onClick={()=>nav('itinerary')} style={{ ...iconBtn, width:36, height:36 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={AB.ink} strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <div style={{ fontWeight:600, fontSize:16 }}>Buyer preview</div>
+      </div>
+
+      <div style={{ padding:'18px 16px' }}>
+        <div style={{ fontSize:11, color:AB.gray, textAlign:'center', marginBottom:10 }}>
+          This is what the Chens see when they tap the WhatsApp link — no login.
+        </div>
+        <div style={{ background:AB.white, borderRadius:18, border:`1px solid ${AB.border}`, overflow:'hidden' }}>
+          <div style={{ padding:'10px 14px', borderBottom:`1px solid ${AB.border}`, background:AB.bg, display:'flex', alignItems:'center', gap:8, fontSize:11, color:AB.gray, fontFamily:'ui-monospace, monospace' }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={AB.gray} strokeWidth="2.4"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            butler.ai/t/TP-2026-0419
+          </div>
+
+          <div style={{ padding:'20px 18px' }}>
+            <div style={{ fontSize:11, color:AB.rausch, fontWeight:700, letterSpacing:0.8, textTransform:'uppercase' }}>Your viewing tour</div>
+            <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:26, fontWeight:600, letterSpacing:-0.3, marginTop:4, lineHeight:1.15 }}>
+              Hi Mr & Mrs Chen 👋
+            </div>
+            <div style={{ fontSize:14, color:AB.ink, marginTop:6, lineHeight:1.5 }}>
+              Your 6 viewings are all confirmed. Tap any stop for directions. We'll pick you up at Tampines MRT at <strong>9:50 AM Saturday</strong>.
+            </div>
+
+            <div style={{ marginTop:14, display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+              {[['6','viewings'],['2','days'],['~4h','total']].map(([n,l]) => (
+                <div key={l} style={{ background:AB.bg, borderRadius:12, padding:'12px 10px', textAlign:'center' }}>
+                  <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:22, fontWeight:600 }}>{n}</div>
+                  <div style={{ fontSize:11, color:AB.gray, marginTop:1 }}>{l}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ marginTop:18, fontSize:11, fontWeight:700, color:AB.gray, letterSpacing:0.7, textTransform:'uppercase' }}>The list</div>
+            {LISTINGS.slice(0,4).map((l,i) => (
+              <div key={l.id} style={{ display:'flex', gap:12, alignItems:'center', padding:'12px 0', borderTop:`1px solid ${AB.border}` }}>
+                <div style={{
+                  width:52, height:52, borderRadius:12, flexShrink:0,
+                  background:`linear-gradient(135deg, ${l.color}25, ${l.color}55)`,
+                  color:l.color, display:'grid', placeItems:'center',
+                  fontFamily:'"Playfair Display", Georgia, serif', fontSize:18, fontWeight:700,
+                }}>{i+1}</div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontWeight:600, fontSize:13.5 }}>{l.name}</div>
+                  <div style={{ fontSize:12, color:AB.gray }}>{l.unit} · {l.price}/mo</div>
+                </div>
+                <button style={{ padding:'6px 10px', borderRadius:999, border:`1px solid ${AB.border}`, background:'#fff', fontSize:12, fontWeight:600, cursor:'pointer' }}>Heart ♡</button>
+              </div>
+            ))}
+
+            <div style={{ marginTop:14, padding:12, background:AB.bg, borderRadius:10, fontSize:12, color:AB.gray }}>
+              Questions? Text David directly on WhatsApp. No need to create an account.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ScreenNotif({ nav }) {
+  const items = [
+    { icon:'⚠️', tone:'red',   title:'Bedok Residences needs a decision', sub:'Sarah Lim — scheduling conflict · 2 min ago', action:()=>nav('decision') },
+    { icon:'✓',  tone:'green', title:'Daniel Koh confirmed Sun 7:45 PM', sub:'Commonwealth Towers · 5 min ago' },
+    { icon:'💬', tone:'amber', title:'Priya Menon asked about parking',  sub:'Queenstown View · auto-handoff · 14 min ago', action:()=>nav('chat') },
+    { icon:'✓',  tone:'green', title:'James Wong owner approved profile',sub:'Bedok Grove · 32 min ago' },
+    { icon:'🔍', tone:'default', title:"Rishi Patel's shortlist is in", sub:'3 listings · ready for your review · 1h ago' },
+    { icon:'📝', tone:'default', title:'Weekly summary ready',             sub:'12 tours handled · 47h saved · yesterday' },
+  ];
+  const bgs = { red:'#FEE7EC', green:'#E9F5F1', amber:'#FFF4DB', default:AB.bg };
+  return (
+    <div style={{ background:AB.white, minHeight:'100%' }}>
+      <div style={{ padding:'56px 20px 8px' }}>
+        <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:30, fontWeight:600, letterSpacing:-0.5 }}>Inbox</div>
+        <div style={{ fontSize:13, color:AB.gray, marginTop:2 }}>What the AI handled for you overnight</div>
+      </div>
+      <div style={{ padding:'12px 20px 100px' }}>
+        {items.map((n,i)=>(
+          <button key={i} onClick={n.action} style={{
+            display:'flex', gap:12, alignItems:'flex-start',
+            width:'100%', textAlign:'left', border:0, background:'transparent', cursor:'pointer',
+            padding:'14px 0', borderTop:`1px solid ${AB.border}`,
+          }}>
+            <div style={{ width:38, height:38, borderRadius:12, background:bgs[n.tone], display:'grid', placeItems:'center', fontSize:16, flexShrink:0 }}>{n.icon}</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontWeight:600, fontSize:14 }}>{n.title}</div>
+              <div style={{ fontSize:12, color:AB.gray, marginTop:2 }}>{n.sub}</div>
+            </div>
+            {n.action && (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={AB.gray} strokeWidth="2.4" style={{marginTop:12}}><path d="M9 18l6-6-6-6"/></svg>
+            )}
+          </button>
+        ))}
+      </div>
+      <BottomTabs active="notif" nav={nav}/>
+    </div>
+  );
+}
+
+function ToggleRow({ t, s, on, onChange, locked, last }) {
+  return (
+    <div style={{ padding:'14px 16px', display:'flex', gap:10, alignItems:'center', borderBottom: !last ? `1px solid ${AB.border}` : 'none' }}>
+      <div style={{ flex:1 }}>
+        <div style={{ fontWeight:500, fontSize:14 }}>{t}</div>
+        <div style={{ fontSize:12, color:AB.gray, marginTop:1 }}>{s}</div>
+      </div>
+      <button onClick={()=>!locked && onChange(!on)} disabled={locked} style={{
+        width:40, height:24, borderRadius:999, border:0, cursor: locked?'not-allowed':'pointer',
+        background: on ? AB.ink : '#ccc', position:'relative', opacity: locked ? .5 : 1,
+      }}>
+        <span style={{ position:'absolute', top:2, left: on ? 18 : 2, width:20, height:20, borderRadius:'50%', background:'#fff', transition:'left .2s', boxShadow:'0 1px 3px rgba(0,0,0,0.2)' }}/>
+      </button>
+    </div>
+  );
+}
+
+function ScreenSettings({ nav }) {
+  const [tone, setTone] = useState('friendly');
+  const [cadence, setCadence] = useState(24);
+  const [autoProfile, setAutoProfile] = useState(true);
+  const [voice, setVoice] = useState(true);
+
+  const preview = tone==='formal'
+    ? "Good morning. I'm an AI assistant coordinating on behalf of David Tan (PropNex). Is the unit at Tampines Trilliant still available for rent?"
+    : tone==='friendly'
+    ? "Hi! I'm an AI assistant helping David Tan with scheduling. Is your unit at Tampines Trilliant still available for rent?"
+    : "Hello — David Tan's AI assistant here helping arrange viewings. Your Tampines Trilliant unit still open for rent?";
+
+  return (
+    <div style={{ background:AB.bg, minHeight:'100%' }}>
+      <div style={{ padding:'56px 20px 8px', background:AB.white }}>
+        <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:30, fontWeight:600, letterSpacing:-0.5 }}>Profile</div>
+      </div>
+
+      <div style={{ padding:'16px 20px 0' }}>
+        <div style={{ background:AB.white, borderRadius:16, padding:16, border:`1px solid ${AB.border}`, display:'flex', gap:12, alignItems:'center' }}>
+          <Avatar label="D" color={AB.ink} size={48}/>
+          <div style={{ flex:1 }}>
+            <div style={{ fontWeight:600, fontSize:15 }}>David Tan</div>
+            <div style={{ fontSize:12, color:AB.gray }}>PropNex · Tampines Branch · R058123G</div>
+          </div>
+          <div style={{ padding:'5px 10px', borderRadius:999, background:'#E9F5F1', color:'#006A5B', fontSize:11, fontWeight:700 }}>✓ WA</div>
+        </div>
+      </div>
+
+      <div style={{ padding:'16px 20px 0' }}>
+        <div style={{ fontSize:11, fontWeight:700, color:AB.gray, letterSpacing:0.7, textTransform:'uppercase', marginBottom:8, paddingLeft:4 }}>AI voice</div>
+        <div style={{ background:AB.white, borderRadius:16, padding:16, border:`1px solid ${AB.border}` }}>
+          <div style={{ display:'flex', gap:6 }}>
+            {['formal','friendly','casual'].map(t => (
+              <button key={t} onClick={()=>setTone(t)} style={{
+                flex:1, padding:'10px 0', border:`1.5px solid ${tone===t?AB.ink:AB.border}`, borderRadius:10,
+                background: tone===t ? AB.ink : '#fff', color: tone===t ? '#fff' : AB.ink,
+                fontSize:13, fontWeight:600, cursor:'pointer', textTransform:'capitalize',
+              }}>{t}</button>
+            ))}
+          </div>
+          <div style={{ marginTop:14, background:AB.bg, padding:'12px 14px', borderRadius:12, fontSize:13, lineHeight:1.45 }}>
+            <div style={{ fontSize:10, color:AB.rausch, fontWeight:700, letterSpacing:0.8, marginBottom:4 }}>PREVIEW</div>
+            {preview}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding:'16px 20px 0' }}>
+        <div style={{ fontSize:11, fontWeight:700, color:AB.gray, letterSpacing:0.7, textTransform:'uppercase', marginBottom:8, paddingLeft:4 }}>Pacing</div>
+        <div style={{ background:AB.white, borderRadius:16, padding:16, border:`1px solid ${AB.border}` }}>
+          <div style={{ display:'flex', justifyContent:'space-between', fontSize:13 }}>
+            <span>Follow-up cadence</span>
+            <strong>{cadence}h</strong>
+          </div>
+          <input type="range" min={4} max={48} value={cadence} onChange={e=>setCadence(+e.target.value)}
+            style={{ width:'100%', marginTop:10, accentColor:AB.rausch }}/>
+        </div>
+      </div>
+
+      <div style={{ padding:'16px 20px 40px' }}>
+        <div style={{ fontSize:11, fontWeight:700, color:AB.gray, letterSpacing:0.7, textTransform:'uppercase', marginBottom:8, paddingLeft:4 }}>Automations</div>
+        <div style={{ background:AB.white, borderRadius:16, border:`1px solid ${AB.border}`, overflow:'hidden' }}>
+          <ToggleRow t="Auto-send tenant profile" s="After availability check" on={autoProfile} onChange={setAutoProfile}/>
+          <ToggleRow t="Transcribe voice notes" s="Whisper · confirm understanding" on={voice} onChange={setVoice}/>
+          <ToggleRow t="Auto-handoff on pricing" s="Escalate to you for offer questions" on={true} onChange={()=>{}}/>
+          <ToggleRow t="Disclose AI identity" s="Required by Meta · always on" on={true} onChange={()=>{}} locked last/>
+        </div>
+      </div>
+
+      <BottomTabs active="settings" nav={nav}/>
+    </div>
+  );
+}
+
+function ScreenOnboarding({ nav }) {
+  const [step, setStep] = useState(0);
+  const steps = [
+    { eyebrow:'WELCOME', title:'Let the AI handle the juggling.', body:'butler.ai coordinates every opposing agent on WhatsApp so you can focus on your clients.', cta:'Get started' },
+    { eyebrow:'CONNECT · STEP 1 / 2', title:'Link your WhatsApp Business.', body:"Messages will always send from your own number. The AI introduces itself in the first line — never pretends to be you.", cta:'Connect WhatsApp' },
+    { eyebrow:"YOU'RE SET", title:'Welcome aboard, David.', body:'Start your first tour — paste a PropertyGuru search or describe what your client wants.', cta:'Open dashboard' },
+  ];
+  const s = steps[step];
+  return (
+    <div style={{
+      minHeight:'100%',
+      background: step===0 ? 'linear-gradient(180deg, #FFE8EC 0%, #fff 60%)' : step===1 ? 'linear-gradient(180deg, #E4F5EF 0%, #fff 60%)' : 'linear-gradient(180deg, #FFF3DE 0%, #fff 60%)',
+      padding:'80px 28px 40px', display:'flex', flexDirection:'column',
+    }}>
+      <div style={{ marginBottom:20, display:'flex', gap:6 }}>
+        {steps.map((_,i)=>(
+          <div key={i} style={{ flex:1, height:3, borderRadius:2, background: i<=step ? AB.ink : '#0002' }}/>
+        ))}
+      </div>
+
+      <div style={{ width:'100%', aspectRatio:'1.2/1', borderRadius:24, background:AB.white, boxShadow:'0 4px 24px rgba(0,0,0,0.07)', border:`1px solid ${AB.border}`, padding:20, display:'grid', placeItems:'center', marginBottom:20 }}>
+        {step===0 && (
+          <div style={{ textAlign:'center' }}>
+            <div style={{ fontSize:64, marginBottom:6 }}>🗝️</div>
+            <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:22, fontWeight:600, color:AB.rausch, letterSpacing:-0.3 }}>butler.ai</div>
+            <div style={{ fontSize:12, color:AB.gray, marginTop:4 }}>Singapore property · agent assistant</div>
+          </div>
+        )}
+        {step===1 && (
+          <div style={{ display:'flex', alignItems:'center', gap:16 }}>
+            <div style={{ width:60, height:60, borderRadius:18, background:AB.ink, color:'#fff', display:'grid', placeItems:'center', fontFamily:'"Playfair Display", Georgia, serif', fontSize:30 }}>b</div>
+            <div style={{ width:28, height:2, background:'#0003' }}/>
+            <div style={{ width:60, height:60, borderRadius:18, background:'#25D366', color:'#fff', display:'grid', placeItems:'center' }}>
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14c-.3-.1-1.7-.8-2-.9-.3-.1-.4-.1-.6.1-.2.3-.7.9-.9 1.1-.2.2-.3.2-.6.1-1.2-.6-2.4-1.5-3.4-3-.3-.5 0-.5.3-1 .2-.2.4-.5.5-.8.1-.3 0-.5 0-.6-.1-.2-.6-1.5-.8-2-.2-.5-.4-.5-.6-.5H7.5c-.2 0-.5.1-.8.4-.3.3-1 1-1 2.4 0 1.4 1 2.8 1.2 3 .2.2 2 3 4.8 4.2 1.7.7 2.3.8 3.2.6.5-.1 1.7-.7 2-1.4.2-.6.2-1.2.2-1.3-.2-.2-.3-.3-.6-.4zM12 2C6.5 2 2 6.5 2 12c0 1.9.5 3.7 1.5 5.3L2 22l4.8-1.3c1.5.9 3.4 1.3 5.2 1.3 5.5 0 10-4.5 10-10S17.5 2 12 2z"/></svg>
+            </div>
+          </div>
+        )}
+        {step===2 && (
+          <div style={{ textAlign:'center' }}>
+            <div style={{ fontSize:54, marginBottom:10 }}>✨</div>
+            <div style={{ fontSize:13, color:AB.gray }}>1 tour in progress · 0 decisions waiting</div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ fontSize:11, fontWeight:700, color:AB.rausch, letterSpacing:0.8 }}>{s.eyebrow}</div>
+      <div style={{ fontFamily:'"Playfair Display", Georgia, serif', fontSize:28, fontWeight:600, letterSpacing:-0.4, lineHeight:1.2, marginTop:6 }}>{s.title}</div>
+      <div style={{ fontSize:14, color:AB.gray, marginTop:8, lineHeight:1.5 }}>{s.body}</div>
+
+      <div style={{ marginTop:'auto', display:'flex', flexDirection:'column', gap:10 }}>
+        <button onClick={()=> step===steps.length-1 ? nav('home') : setStep(step+1)} style={{
+          width:'100%', padding:'15px', border:0, borderRadius:12,
+          background:AB.ink, color:'#fff', fontSize:15, fontWeight:600, cursor:'pointer',
+        }}>{s.cta}</button>
+        {step>0 && step<steps.length-1 && (
+          <button onClick={()=>nav('home')} style={{ padding:'8px', border:0, background:'transparent', color:AB.gray, fontSize:13, cursor:'pointer' }}>Skip for now</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Main — board layout with 9 phone frames
+// ============================================================
+
+function PhoneFrame({ children, scale=1 }) {
+  return (
+    <div style={{ transform:`scale(${scale})`, transformOrigin:'top center' }}>
+      <IOSDevice width={390} height={844}>
+        <div style={{ height:'100%', overflow:'auto', position:'relative' }}>
+          {children}
+        </div>
+      </IOSDevice>
+    </div>
+  );
+}
+
+function ActivePhone() {
+  const [screen, setScreen] = useState(() => {
+    try { return localStorage.getItem('ba-screen') || 'home'; } catch(e){ return 'home'; }
+  });
+  useEffect(()=>{ try { localStorage.setItem('ba-screen', screen); } catch(e){} }, [screen]);
+
+  const nav = (s)=> setScreen(s);
+  let Screen;
+  switch(screen) {
+    case 'home':       Screen = <ScreenHome nav={nav}/>; break;
+    case 'tour':       Screen = <ScreenTour nav={nav}/>; break;
+    case 'chat':       Screen = <ScreenChat nav={nav}/>; break;
+    case 'search':     Screen = <ScreenSearch nav={nav}/>; break;
+    case 'decision':   Screen = <ScreenDecision nav={nav}/>; break;
+    case 'itinerary':  Screen = <ScreenItinerary nav={nav}/>; break;
+    case 'buyer':      Screen = <ScreenBuyer nav={nav}/>; break;
+    case 'notif':      Screen = <ScreenNotif nav={nav}/>; break;
+    case 'settings':   Screen = <ScreenSettings nav={nav}/>; break;
+    case 'onboarding': Screen = <ScreenOnboarding nav={nav}/>; break;
+    default:           Screen = <ScreenHome nav={nav}/>;
+  }
+  return <PhoneFrame>{Screen}</PhoneFrame>;
+}
+
+function StaticPhone({ screen }) {
+  const nop = ()=>{};
+  let S;
+  switch(screen) {
+    case 'onboarding': S = <ScreenOnboarding nav={nop}/>; break;
+    case 'search':     S = <ScreenSearch nav={nop}/>; break;
+    case 'chat':       S = <ScreenChat nav={nop}/>; break;
+    case 'decision':   S = <ScreenDecision nav={nop}/>; break;
+    case 'itinerary':  S = <ScreenItinerary nav={nop}/>; break;
+    case 'buyer':      S = <ScreenBuyer nav={nop}/>; break;
+    case 'notif':      S = <ScreenNotif nav={nop}/>; break;
+    case 'settings':   S = <ScreenSettings nav={nop}/>; break;
+    default:           S = <ScreenHome nav={nop}/>;
+  }
+  return <PhoneFrame>{S}</PhoneFrame>;
+}
+
+function Board() {
+  const cells = [
+    { screen:'onboarding', cellKey:'ob',   eyebrow:'01 · OPEN',          title:'Onboarding',        sub:'Sign up, link WhatsApp, meet the AI assistant.' },
+    { screen:'home',       cellKey:'home', eyebrow:'02 · DAILY DRIVER',  title:'Agent home',        sub:'Active tours at a glance — progress, alerts, what needs you today.' },
+    { screen:'search',     cellKey:'srch', eyebrow:'03 · SEARCH',        title:'AI search',         sub:'PropertyGuru link or plain English — semantic filter finds the fit.' },
+    { cellKey:'tour', active:true, eyebrow:'TAP AROUND',                title:'Tour Detail',       sub:'The hero — fully interactive. Try the AI chat handoff, decision card, itinerary preview.' },
+    { screen:'chat',       cellKey:'chat', eyebrow:'05 · CHAT TAKEOVER', title:'AI thread',         sub:'Read the whole conversation, tap to take over, AI pauses immediately.' },
+    { screen:'decision',   cellKey:'dec',  eyebrow:'06 · EXCEPTION',     title:'Decision card',     sub:"When AI can't schedule — three options, one tap." },
+    { screen:'itinerary',  cellKey:'itin', eyebrow:'07 · FINAL',         title:'Itinerary',         sub:'Ready to share · map · transits · clusters · 30-min stops.' },
+    { screen:'buyer',      cellKey:'byr',  eyebrow:'08 · BUYER VIEW',    title:'The Chens see this',sub:'No login. Opens from the WhatsApp link you send.' },
+    { screen:'settings',   cellKey:'set',  eyebrow:'09 · CONFIG',        title:'AI tone & rules',   sub:'Change the voice and the message preview re-renders live.' },
+  ];
+
+  return (
+    <div className="board">
+      <div className="board-head">
+        <div className="eyebrow">butler.ai · agent app · iOS</div>
+        <h1>A mobile coordination room for<br/>Singapore property agents.</h1>
+        <p>Nine screens from one agent's working day. The <strong>Tour Detail</strong> phone in the middle is fully interactive — tap through to chat, decisions, and the final itinerary. Others show the key states you'll see en route.</p>
+      </div>
+
+      <div className="phone-grid">
+        {cells.map(c => (
+          <div key={c.cellKey} className={`phone-cell ${c.active?'active':''}`}>
+            {c.active ? <ActivePhone/> : <StaticPhone screen={c.screen}/>}
+            <div className="cap-eyebrow">{c.eyebrow}</div>
+            <div className="cap-title">{c.title}</div>
+            <div className="cap-sub">{c.sub}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Board/>);
+</script>
+</body>
+</html>
