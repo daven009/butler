@@ -13,3 +13,6 @@ frontend/.env
 
 frontend/certificates/
 npm-debug.log*
+
+# Playwright browser profile cache
+backend/.playwright/

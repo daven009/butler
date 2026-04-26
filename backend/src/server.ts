@@ -46,6 +46,7 @@ import {
   searchCatalog,
   updateThreadOwnership
 } from './lib/repositories/butlerRepository';
+import { scrapePropertyGuruSearch } from './lib/scrapers/propertyGuru';
 import {
   createClient,
   deleteClient,
@@ -376,6 +377,88 @@ app.post('/api/search/results', (req, res) => {
   const tags = Array.isArray(req.body.tags) ? req.body.tags : [];
   const linkedListingIds = Array.isArray(req.body.linkedListingIds) ? req.body.linkedListingIds : [];
   res.status(200).json({ results: searchCatalog(tags, linkedListingIds) });
+});
+
+// ── PropertyGuru scraping endpoints ──
+
+// POST /api/scrape/propertyguru — Scrape listing search results (with optional detail pages)
+app.post('/api/scrape/propertyguru', async (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+
+  const url = String(req.body.url || '').trim();
+  if (!url) {
+    return sendError(res, 400, 'VALIDATION_FAILED', 'url is required', { url: 'url is required' });
+  }
+
+  // Wrap scraping in a timeout to prevent infinite hangs
+  const SCRAPE_TIMEOUT_MS = 600_000; // 10 minutes max (detail scraping is slow)
+
+  try {
+    const scrapePromise = scrapePropertyGuruSearch({
+      url,
+      limit: Math.min(Number(req.body.limit) || 20, 100),
+      headless: Boolean(req.body.headless), // default headed for better CF bypass
+      scrapeDetails: req.body.scrapeDetails !== false, // default ON — we need description for AI filtering
+      scrapePhone: false, // phone scraping is a separate endpoint
+      debug: Boolean(req.body.debug),
+      timeoutMs: 90_000, // per-operation timeout (CF challenges can be slow)
+    });
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Scraping timed out after 10 minutes. The website may be blocking automated access.')), SCRAPE_TIMEOUT_MS)
+    );
+
+    const result = await Promise.race([scrapePromise, timeoutPromise]);
+    return res.status(200).json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to scrape PropertyGuru';
+    return sendError(res, 500, 'PROPERTYGURU_SCRAPE_FAILED', message);
+  }
+});
+
+// POST /api/scrape/propertyguru/phones — Scrape agent phone numbers for specific listing URLs
+// Body: { urls: string[] }  (array of listing detail page URLs)
+// Returns: { results: Array<{ url, agentName?, agentPhone?, error? }> }
+app.post('/api/scrape/propertyguru/phones', async (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+
+  const urls: string[] = Array.isArray(req.body.urls) ? req.body.urls : [];
+  if (!urls.length) {
+    return sendError(res, 400, 'VALIDATION_FAILED', 'urls array is required', { urls: 'urls is required and must be a non-empty array' });
+  }
+  if (urls.length > 20) {
+    return sendError(res, 400, 'VALIDATION_FAILED', 'Too many URLs', { urls: 'Maximum 20 URLs per request' });
+  }
+
+  try {
+    // We'll scrape the first URL's search-like page with phone enabled
+    // But since these are individual listing URLs, we use a different approach:
+    // Open a browser context and visit each URL to extract phone numbers
+    const result = await scrapePropertyGuruSearch({
+      url: urls[0], // use first URL as the "search" page — the scraper will handle detail pages
+      limit: urls.length,
+      headless: req.body.headless !== false,
+      scrapeDetails: true,
+      scrapePhone: true,
+      debug: Boolean(req.body.debug),
+    });
+
+    // Map results back to the requested URLs
+    const phoneResults = urls.map(requestedUrl => {
+      const listing = result.listings.find(l => l.url === requestedUrl);
+      return {
+        url: requestedUrl,
+        agentName: listing?.detail?.agentName || listing?.agent || null,
+        agentPhone: listing?.detail?.agentPhone || null,
+        error: listing ? null : 'Listing not found in scrape results',
+      };
+    });
+
+    return res.status(200).json({ results: phoneResults });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to scrape phone numbers';
+    return sendError(res, 500, 'PROPERTYGURU_PHONE_SCRAPE_FAILED', message);
+  }
 });
 
 app.get('/api/tours/:id/threads', (req, res) => {
