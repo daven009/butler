@@ -76,6 +76,10 @@ export const clientsApi = {
 
 export const searchApi = {
   parse: (text, source = 'text') => api.post('/api/search/parse', { text, source }),
+  /** LLM-powered text → tags parsing (falls back to regex on failure) */
+  parseLlm: (text, source = 'text') => api.post('/api/search/parse-llm', { text, source }),
+  /** LLM-powered semantic listing evaluation */
+  filterLlm: (listings, criteria) => api.post('/api/search/filter-llm', { listings, criteria }),
   importLink: (url) => api.post('/api/search/import-link', { url }),
   results: (tags, linkedListingIds = []) => api.post('/api/search/results', { tags, linkedListingIds }),
 };
@@ -113,12 +117,12 @@ async function requestWithTimeout(path, options = {}, timeoutMs = 150000) {
 }
 
 export const scrapeApi = {
-  /** Scrape PropertyGuru search results (with details for AI filtering) */
-  listings: (url, { limit = 20, debug = false } = {}) =>
+  /** Scrape PropertyGuru search results (list page only by default) */
+  listings: (url, { limit = 20, scrapeDetails = false, debug = false } = {}) =>
     requestWithTimeout('/api/scrape/propertyguru', {
       method: 'POST',
-      body: JSON.stringify({ url, limit, scrapeDetails: true, debug }),
-    }, 660000), // 11 min timeout for scraping (backend has 10 min limit)
+      body: JSON.stringify({ url, limit, scrapeDetails, debug }),
+    }, 180000), // 3 min timeout (list-only is fast; detail scraping needs more)
 
   /** Scrape agent phone/WhatsApp numbers for specific listing URLs */
   phones: (urls, { debug = false } = {}) =>
@@ -126,6 +130,9 @@ export const scrapeApi = {
       method: 'POST',
       body: JSON.stringify({ urls, debug }),
     }, 120000), // 2 min timeout for phone scraping
+
+  /** Get all stored PG listings from backend database */
+  storedListings: () => api.get('/api/pg-listings'),
 };
 
 export const calendarApi = {

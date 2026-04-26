@@ -19,7 +19,7 @@ function buildMonthDays() {
 
   for (let day = 1; day <= daysInMonth; day += 1) {
     const iso = `2026-04-${String(day).padStart(2, '0')}`;
-    cells.push({ key: iso, iso, day, count: SCHEDULES[iso]?.length || 0 });
+    cells.push({ key: iso, iso, day, count: 0 });
   }
 
   while (cells.length % 7 !== 0) {

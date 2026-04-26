@@ -231,6 +231,62 @@ function parseCriteriaText(rawText, source = 'text') {
     }));
   }
 
+  // ── Min size (sqft) ──
+  // English: "above 1000 sqft", ">1000sqft", "at least 1000 sq ft", "min 1000sqft", "more than 1000 sqft"
+  // Chinese: "大于1000sqft", "1000sqft以上", "面积大于1000", "超过1000sqft"
+  const sizeMatch = text.match(
+    /(?:(?:大于|超过|不低于|至少|面积(?:大于|超过)?|above|over|more\s+than|greater\s+than|at\s+least|min(?:imum)?|>|≥)\s*(\d{3,5})\s*(?:sq\s*f(?:ee)?t|sqft|平方英尺)?|(\d{3,5})\s*(?:sq\s*f(?:ee)?t|sqft|平方英尺)\s*(?:以上|及以上|或以上|above|\+))/i
+  );
+  if (sizeMatch) {
+    const size = Number(sizeMatch[1] || sizeMatch[2]);
+    if (size >= 100 && size <= 50000) {
+      tags = pushUniqueTag(tags, createTag({
+        label: `≥ ${size} sqft`,
+        groupKey: 'minSize',
+        groupLabel: 'Min size',
+        mergeStrategy: 'replace',
+        kind: 'minSize',
+        value: size,
+        source,
+      }));
+    }
+  }
+
+  // ── Semantic tags: extract unmatched phrases as free-text criteria ──
+  // Split input into comma/semicolon/newline-separated phrases, then check if
+  // each phrase was already captured by a structured tag above.
+  if (source !== 'url') {
+    const matchedPatterns = [
+      /\bhdb\b/i, /\bcondo\b|\bcondominium\b/i, /\blanded\b/i,
+      /(\d)\s*(?:-|\s)?(?:bed(?:room)?s?|br|rooms?)/i,
+      /(?:budget(?:\s+around|\s+under|\s+below)?|under|below|around|max)?\s*(?:s\$|\$)\s*([\d,]{4,6})/i,
+      /pet[-\s]?friendly|pets?\s+(?:ok|okay)|small dog|dog friendly|dog ok/i,
+      /south[-\s]?facing/i, /renovated/i, /high floor/i,
+      /within\s+(\d{1,2})\s*min(?:ute)?s?\s*(?:drive|travel)?\s*(?:to|from)\s+/i,
+      /(?:大于|超过|不低于|至少|面积|above|over|more\s+than|greater\s+than|at\s+least|min(?:imum)?|>|≥)\s*\d{3,5}\s*(?:sq\s*f(?:ee)?t|sqft|平方英尺)?/i,
+      /\d{3,5}\s*(?:sq\s*f(?:ee)?t|sqft|平方英尺)\s*(?:以上|及以上|或以上|above|\+)/i,
+    ];
+    const locationPatterns = LOCATION_CATALOG.map(l => new RegExp(`\\b${l.replace('-', '[-\\s]?')}\\b`, 'i'));
+    const schoolPatterns = SCHOOL_CATALOG.map(s => new RegExp(s.replace(' 1km', '').replace(/[-\s]/g, '[-\\s]?'), 'i'));
+    const allPatterns = [...matchedPatterns, ...locationPatterns, ...schoolPatterns];
+
+    const phrases = text.split(/[,;.\n]+/).map(s => s.trim()).filter(s => s.length > 2);
+    for (const phrase of phrases) {
+      const alreadyCaptured = allPatterns.some(rx => rx.test(phrase));
+      if (!alreadyCaptured) {
+        tags = pushUniqueTag(tags, createTag({
+          label: phrase.length > 30 ? phrase.slice(0, 28) + '…' : phrase,
+          groupKey: 'semantic',
+          groupLabel: 'Keyword filter',
+          mergeStrategy: 'union',
+          kind: 'semantic',
+          value: phrase.toLowerCase(),
+          source,
+        }));
+      }
+    }
+  }
+
   return tags;
 }
 
@@ -243,7 +299,7 @@ function resolveListingFromUrl(url) {
 
 function parsePropertyGuruUrl(url) {
   const normalized = decodeURIComponent(url).toLowerCase();
-  const isSearchUrl = normalized.includes('?') || normalized.includes('property-for-rent');
+  const isSearchUrl = normalized.includes('?') || normalized.includes('property-for-rent') || normalized.includes('property-for-sale');
 
   if (!isSearchUrl) {
     return {
@@ -253,58 +309,138 @@ function parsePropertyGuruUrl(url) {
     };
   }
 
-  let extracted = parseCriteriaText(
-    normalized
-      .replace(/[?&=_]/g, ' ')
-      .replace(/%20/g, ' ')
-      .replace(/-/g, ' '),
-    'url',
-  );
+  // ── Parse URL query parameters directly ──
+  let params;
+  try {
+    params = new URL(url).searchParams;
+  } catch {
+    // Fallback: try to extract query string manually
+    const qIdx = url.indexOf('?');
+    params = new URLSearchParams(qIdx >= 0 ? url.slice(qIdx + 1) : '');
+  }
 
-  if (!extracted.length) {
-    extracted = [
-      createTag({
-        label: 'Condo',
-        groupKey: 'propertyType',
-        groupLabel: 'Property type',
-        mergeStrategy: 'union',
-        kind: 'propertyType',
-        value: 'condo',
-        source: 'url',
-      }),
-      createTag({
-        label: '3 Rooms',
-        groupKey: 'bedroom',
-        groupLabel: 'Bedrooms',
-        mergeStrategy: 'replace',
-        kind: 'bedroom',
-        value: 3,
-        source: 'url',
-      }),
-      createTag({
-        label: 'Tampines',
+  let tags = [];
+
+  // NOTE: Listing type (sale/rent) is metadata, not a filter criterion — skip it.
+
+  // Property type: property_type, property_type_code
+  const propType = (params.get('property_type') || params.get('property_type_code') || '').toLowerCase();
+  if (propType) {
+    const typeMap = {
+      condo: 'Condo', condominium: 'Condo', 'executive condominium': 'EC',
+      hdb: 'HDB', landed: 'Landed', apartment: 'Apartment',
+    };
+    const label = typeMap[propType] || propType.charAt(0).toUpperCase() + propType.slice(1);
+    tags = pushUniqueTag(tags, createTag({
+      label,
+      groupKey: 'propertyType',
+      groupLabel: 'Property type',
+      mergeStrategy: 'union',
+      kind: 'propertyType',
+      value: propType,
+      source: 'url',
+    }));
+  }
+
+  // Bedrooms: bedrooms, beds[], beds
+  const bedrooms = params.get('bedrooms') || params.get('beds[]') || params.get('beds');
+  if (bedrooms && !isNaN(Number(bedrooms))) {
+    tags = pushUniqueTag(tags, createTag({
+      label: `${bedrooms} Bed`,
+      groupKey: 'bedroom',
+      groupLabel: 'Bedrooms',
+      mergeStrategy: 'replace',
+      kind: 'bedroom',
+      value: Number(bedrooms),
+      source: 'url',
+    }));
+  }
+
+  // Max price: maxPrice, maxprice, max_price
+  const maxPrice = params.get('maxPrice') || params.get('maxprice') || params.get('max_price');
+  if (maxPrice && !isNaN(Number(maxPrice))) {
+    const amount = Number(maxPrice);
+    tags = pushUniqueTag(tags, createTag({
+      label: `≤ ${formatCurrency(amount)}`,
+      groupKey: 'budget',
+      groupLabel: 'Budget',
+      mergeStrategy: 'replace',
+      kind: 'budgetMax',
+      value: amount,
+      source: 'url',
+    }));
+  }
+
+  // Min price: minPrice, minprice, min_price
+  const minPrice = params.get('minPrice') || params.get('minprice') || params.get('min_price');
+  if (minPrice && !isNaN(Number(minPrice))) {
+    const amount = Number(minPrice);
+    tags = pushUniqueTag(tags, createTag({
+      label: `≥ ${formatCurrency(amount)}`,
+      groupKey: 'budgetMin',
+      groupLabel: 'Budget min',
+      mergeStrategy: 'replace',
+      kind: 'budgetMin',
+      value: amount,
+      source: 'url',
+    }));
+  }
+
+  // Location / district: district, district_code, freetext
+  const district = params.get('district') || params.get('district_code') || '';
+  const freetext = params.get('freetext') || '';
+  // NOTE: skip params.get('search') — it's usually "true"/"false", not a location
+  const locationStr = (district + ' ' + freetext).trim();
+  if (locationStr) {
+    // Try matching known locations from catalog first
+    const locLower = locationStr.toLowerCase();
+    let matched = false;
+    LOCATION_CATALOG.forEach((location) => {
+      if (locLower.includes(location.toLowerCase())) {
+        matched = true;
+        tags = pushUniqueTag(tags, createTag({
+          label: location,
+          groupKey: 'location',
+          groupLabel: 'Location',
+          mergeStrategy: 'union',
+          kind: 'location',
+          value: location.toLowerCase(),
+          source: 'url',
+        }));
+      }
+    });
+    // If no catalog match, use the raw text
+    if (!matched && locationStr.length > 1) {
+      const label = locationStr.length > 25 ? locationStr.slice(0, 23) + '…' : locationStr;
+      tags = pushUniqueTag(tags, createTag({
+        label: label.charAt(0).toUpperCase() + label.slice(1),
         groupKey: 'location',
         groupLabel: 'Location',
         mergeStrategy: 'union',
         kind: 'location',
-        value: 'tampines',
+        value: locationStr.toLowerCase(),
         source: 'url',
-      }),
-      createTag({
-        label: formatCurrency(3500),
-        groupKey: 'budget',
-        groupLabel: 'Budget',
-        mergeStrategy: 'replace',
-        kind: 'budgetMax',
-        value: 3500,
-        source: 'url',
-      }),
-    ];
+      }));
+    }
+  }
+
+  // Min size: minSize, min_size (sqft)
+  const minSize = params.get('minSize') || params.get('min_size');
+  if (minSize && !isNaN(Number(minSize))) {
+    tags = pushUniqueTag(tags, createTag({
+      label: `≥ ${Number(minSize)} sqft`,
+      groupKey: 'minSize',
+      groupLabel: 'Min size',
+      mergeStrategy: 'replace',
+      kind: 'minSize',
+      value: Number(minSize),
+      source: 'url',
+    }));
   }
 
   return {
     kind: 'search',
-    tags: extracted,
+    tags,
   };
 }
 
@@ -315,6 +451,13 @@ function mergeIncomingTags(currentTags, incomingTags) {
 
   incomingTags.forEach((tag) => {
     const sameGroup = nextTags.filter((item) => item.groupKey === tag.groupKey);
+
+    // If the existing tag in this group is locked and the incoming one isn't,
+    // do NOT replace — locked tags (from URL) are first-layer and immutable.
+    const hasLockedInGroup = sameGroup.some((item) => item.locked);
+    if (hasLockedInGroup && !tag.locked && tag.mergeStrategy !== 'union') {
+      return; // skip — cannot override locked tags
+    }
 
     if (tag.mergeStrategy === 'union') {
       if (sameGroup.some((item) => item.value === tag.value)) {
@@ -353,6 +496,10 @@ function tagMatchesListing(tag, listing) {
       return listing.bedrooms === tag.value;
     case 'budgetMax':
       return listing.priceValue <= tag.value;
+    case 'budgetMin':
+      return listing.priceValue >= tag.value;
+    case 'minSize':
+      return listing.areaSqft && Number(listing.areaSqft) >= tag.value;
     case 'location':
       return listing.area.toLowerCase() === tag.value || listing.mrtStation.toLowerCase() === tag.value;
     case 'school':
@@ -453,16 +600,18 @@ function buildCriteriaLayout(tags) {
 }
 
 function CriteriaTag({ tag, onRemove }) {
+  const bgMap = { url: '#EEF5FF', semantic: '#E6F9F0' };
+  const bg = tag.locked ? '#E8EDF4' : (bgMap[tag.source] || bgMap[tag.kind] || '#F4F1EA');
   return (
     <span
-      title={`${SOURCE_META[tag.source]?.label || 'Input'} · ${tag.groupLabel}`}
+      title={`${SOURCE_META[tag.source]?.label || 'Input'} · ${tag.groupLabel}${tag.kind === 'semantic' ? ' (keyword)' : ''}${tag.locked ? ' (from URL — cannot remove)' : ''}`}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
         gap: 6,
         padding: '8px 10px',
         borderRadius: 999,
-        background: tag.source === 'url' ? '#EEF5FF' : '#F4F1EA',
+        background: bg,
         color: AB.ink,
         fontSize: 12.5,
         fontWeight: 600,
@@ -470,22 +619,24 @@ function CriteriaTag({ tag, onRemove }) {
         maxWidth: '100%',
       }}
     >
-      <span style={{ fontSize: 11 }}>{SOURCE_META[tag.source]?.icon || '•'}</span>
+      <span style={{ fontSize: 11 }}>{SOURCE_META[tag.source]?.icon || (tag.locked ? '🔗' : '•')}</span>
       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tag.label}</span>
-      <button
-        onClick={() => onRemove(tag.id)}
-        style={{
-          border: 0,
-          background: 'transparent',
-          padding: 0,
-          fontSize: 14,
-          lineHeight: 1,
-          cursor: 'pointer',
-          color: AB.gray,
-        }}
-      >
-        ×
-      </button>
+      {!tag.locked && (
+        <button
+          onClick={() => onRemove(tag.id)}
+          style={{
+            border: 0,
+            background: 'transparent',
+            padding: 0,
+            fontSize: 14,
+            lineHeight: 1,
+            cursor: 'pointer',
+            color: AB.gray,
+          }}
+        >
+          ×
+        </button>
+      )}
     </span>
   );
 }
@@ -497,10 +648,10 @@ function formatPgPrice(price) {
   return `S$${Number(price).toLocaleString('en-SG')}`;
 }
 
-/** Simple keyword-based AI filter against description + all detail fields.
+/** Keyword-based filter: checks semantic tags against listing description + all detail fields.
  *  Returns { pass: boolean, matches: string[], misses: string[] } */
-function aiFilterListing(listing, buyerCriteria) {
-  if (!buyerCriteria.trim()) return { pass: true, matches: [], misses: [] };
+function aiFilterListing(listing, semanticTags) {
+  if (!semanticTags.length) return { pass: true, matches: [], misses: [] };
 
   const corpus = [
     listing.title,
@@ -514,24 +665,18 @@ function aiFilterListing(listing, buyerCriteria) {
     ...(Object.values(listing.detail?.allDetails || {})),
   ].filter(Boolean).join(' ').toLowerCase();
 
-  // Extract individual requirements from the buyer's criteria
-  const keywords = buyerCriteria
-    .toLowerCase()
-    .split(/[,;.\n]+/)
-    .map(s => s.trim())
-    .filter(Boolean);
-
   const matches = [];
   const misses = [];
 
-  for (const kw of keywords) {
+  for (const tag of semanticTags) {
+    const kw = tag.value; // already lowercase
     // Split multi-word criteria into key terms and check if ALL are present
     const terms = kw.split(/\s+/).filter(t => t.length > 2);
-    const found = terms.every(term => corpus.includes(term));
+    const found = terms.length > 0 && terms.every(term => corpus.includes(term));
     if (found) {
-      matches.push(kw);
+      matches.push(tag.label);
     } else {
-      misses.push(kw);
+      misses.push(tag.label);
     }
   }
 
@@ -542,13 +687,95 @@ function aiFilterListing(listing, buyerCriteria) {
   };
 }
 
-function PGListingCard({ listing, shortlisted, onToggleShortlist, onGetPhone, phoneLoading, buyerCriteria }) {
+/** Filter PG listings against user-added tags (structured + semantic).
+ *  Tags with source='url' are skipped — PG already filtered by those URL params.
+ *  Returns sorted array with aiResult attached. */
+function filterPgListingsWithTags(pgListings, tags) {
+  if (!pgListings.length) return [];
+
+  // Skip URL-sourced tags: PropertyGuru already filtered by those search params
+  const userTags = tags.filter(t => t.source !== 'url');
+  const semanticTags = userTags.filter(t => t.kind === 'semantic');
+  const structuredTags = userTags.filter(t => t.kind !== 'semantic');
+
+  return pgListings.map(listing => {
+    // ── Structured tag matching (property type, bedrooms, budget, etc.) ──
+    let structuredPass = true;
+    const structuredMatches = [];
+    const structuredMisses = [];
+
+    if (structuredTags.length) {
+      const grouped = structuredTags.reduce((acc, tag) => {
+        acc[tag.groupKey] = acc[tag.groupKey] || [];
+        acc[tag.groupKey].push(tag);
+        return acc;
+      }, {});
+
+      for (const [, group] of Object.entries(grouped)) {
+        const matched = group.some(tag => pgTagMatchesListing(tag, listing));
+        if (matched) {
+          structuredMatches.push(group[0].label);
+        } else {
+          structuredMisses.push(group[0].label);
+          structuredPass = false;
+        }
+      }
+    }
+
+    // ── Semantic tag matching (keyword search in description) ──
+    const aiResult = aiFilterListing(listing, semanticTags);
+
+    const totalCriteria = (structuredTags.length ? Object.keys(structuredTags.reduce((a, t) => { a[t.groupKey] = 1; return a; }, {})).length : 0)
+      + semanticTags.length;
+    const totalMatches = structuredMatches.length + aiResult.matches.length;
+    const score = totalCriteria > 0 ? Math.round((totalMatches / totalCriteria) * 100) : 100;
+
+    return {
+      listing,
+      aiResult: {
+        pass: structuredPass && aiResult.pass,
+        matches: [...structuredMatches, ...aiResult.matches],
+        misses: [...structuredMisses, ...aiResult.misses],
+      },
+      score,
+    };
+  })
+    .sort((a, b) => {
+      // Passing first, then by score
+      if (a.aiResult.pass !== b.aiResult.pass) return a.aiResult.pass ? -1 : 1;
+      return b.score - a.score;
+    });
+}
+
+/** Check if a structured tag matches a PG listing's fields */
+function pgTagMatchesListing(tag, listing) {
+  const detail = listing.detail || {};
+  const corpus = [listing.title, listing.address, listing.propertyType, detail.propertyDetailsRaw, listing.rawText]
+    .filter(Boolean).join(' ').toLowerCase();
+
+  switch (tag.kind) {
+    case 'propertyType':
+      return corpus.includes(tag.value);
+    case 'bedroom':
+      return listing.bedrooms === tag.value;
+    case 'budgetMax':
+      return listing.price && Number(listing.price) <= tag.value;
+    case 'budgetMin':
+      return listing.price && Number(listing.price) >= tag.value;
+    case 'minSize':
+      return listing.areaSqft && Number(listing.areaSqft) >= tag.value;
+    case 'location':
+      return corpus.includes(tag.value);
+    case 'boolean':
+      return corpus.includes(tag.field?.replace(/([A-Z])/g, ' $1').toLowerCase());
+    default:
+      return false;
+  }
+}
+
+function PGListingCard({ listing, shortlisted, onToggleShortlist, onGetPhone, phoneLoading, aiResult, matchScore }) {
   const [expanded, setExpanded] = useState(false);
   const detail = listing.detail || {};
-  const aiResult = buyerCriteria ? aiFilterListing(listing, buyerCriteria) : null;
-  const matchScore = aiResult && buyerCriteria
-    ? Math.round(((aiResult.matches.length) / Math.max(aiResult.matches.length + aiResult.misses.length, 1)) * 100)
-    : null;
   const dimmed = aiResult && !aiResult.pass;
 
   return (
@@ -631,7 +858,7 @@ function PGListingCard({ listing, shortlisted, onToggleShortlist, onGetPhone, ph
           </div>
 
           {/* AI match indicators */}
-          {aiResult && buyerCriteria && (
+          {aiResult && (aiResult.matches.length > 0 || aiResult.misses.length > 0) && (
             <div style={{ marginTop: 6, fontSize: 11.5, lineHeight: 1.4 }}>
               {aiResult.matches.map(m => (
                 <span key={m} style={{ color: AB.babu, marginRight: 8 }}>✅ {m}</span>
@@ -810,9 +1037,48 @@ export default function Search() {
   const [pgListings, setPgListings] = useState([]); // scraped PG listings (raw from API)
   const [pgLoading, setPgLoading] = useState(false); // true while scraping
   const [pgError, setPgError] = useState('');
-  const [buyerCriteria, setBuyerCriteria] = useState(''); // natural-language criteria for 2nd-round filtering
   const [pgShortlistedUrls, setPgShortlistedUrls] = useState([]); // shortlisted by URL
   const [phoneLoadingUrls, setPhoneLoadingUrls] = useState(new Set()); // URLs currently fetching phone
+
+  // ── On mount: restore stored PG listings from backend DB ──
+  useEffect(() => {
+    scrapeApi.storedListings()
+      .then((result) => {
+        const stored = result.listings || [];
+        if (stored.length) {
+          // Extract the `data` field — that's the flat listing object the frontend expects
+          const flatListings = stored.map((entry) => entry.data).filter(Boolean);
+          setPgListings(flatListings);
+
+          // Find the _sourceUrl with the MOST query parameters (most informative)
+          let bestUrl = '';
+          let bestParamCount = -1;
+          flatListings.forEach((listing) => {
+            const u = listing?._sourceUrl || '';
+            if (!u.includes('propertyguru.com')) return;
+            const qIdx = u.indexOf('?');
+            const paramCount = qIdx >= 0 ? u.slice(qIdx + 1).split('&').length : 0;
+            if (paramCount > bestParamCount) {
+              bestParamCount = paramCount;
+              bestUrl = u;
+            }
+          });
+
+          if (bestUrl) {
+            const pgParsed = parsePropertyGuruUrl(bestUrl);
+            if (pgParsed.tags?.length) {
+              // Mark URL-derived tags as locked (cannot be removed — first-layer filter)
+              const lockedTags = pgParsed.tags.map((t) => ({ ...t, locked: true }));
+              setTags((current) => {
+                if (current.length === 0) return mergeIncomingTags(current, lockedTags).tags;
+                return current;
+              });
+            }
+          }
+        }
+      })
+      .catch(() => { /* silently ignore — fresh start */ });
+  }, []);
 
   const recognitionRef = useRef(null);
   const shouldCommitVoiceRef = useRef(false);
@@ -879,7 +1145,11 @@ export default function Search() {
   }, [transcript]);
 
   function removeTag(tagId) {
-    setTags((currentTags) => currentTags.filter((tag) => tag.id !== tagId));
+    setTags((currentTags) => {
+      const tag = currentTags.find((t) => t.id === tagId);
+      if (tag?.locked) return currentTags; // URL-derived tags cannot be removed
+      return currentTags.filter((t) => t.id !== tagId);
+    });
   }
 
   function applyIncomingTags(incomingTags) {
@@ -899,19 +1169,28 @@ export default function Search() {
 
     setTranscript((current) => [...current, { id: makeId('turn'), from: 'user', source, text }]);
 
-    // ── PG URL → trigger real scraping ──
+    // ── PG URL → extract URL tags + trigger real scraping ──
     if (isProbablyUrl(text) && text.includes('propertyguru.com')) {
       setPgLoading(true);
       setPgError('');
-      setToast('🔍 Scraping PropertyGuru listings (limit 5, with details)…');
+      setToast('🔍 Scraping PropertyGuru listings…');
 
-      scrapeApi.listings(text, { limit: 5 })
+      // Immediately parse URL params into tags and show in criteria panel
+      // URL-derived tags are locked (first-layer filter — cannot be removed)
+      const pgParsed = parsePropertyGuruUrl(text);
+      if (pgParsed.tags?.length) {
+        applyIncomingTags(pgParsed.tags.map((t) => ({ ...t, locked: true })));
+      }
+
+      scrapeApi.listings(text, { limit: 20 })
         .then((result) => {
           const listings = result.listings || [];
           setPgListings(listings);
           setPgLoading(false);
           if (listings.length) {
-            setToast(`✅ Scraped ${listings.length} listings from PropertyGuru.`);
+            const db = result.db || {};
+            const dbInfo = db.inserted ? ` (${db.inserted} new, ${db.updated} updated, ${db.total} total in DB)` : '';
+            setToast(`✅ ${listings.length} listings scraped${dbInfo}`);
           } else {
             setToast('No listings found at that URL.');
           }
@@ -921,32 +1200,43 @@ export default function Search() {
           setPgError(err.message || 'Scraping failed');
           setToast('⚠️ Scraping failed — check the URL or try again.');
         });
-
-      // Also run legacy import for tag extraction
-      searchApi.importLink(text)
-        .then((parsed) => {
-          if (parsed.tags?.length) {
-            applyIncomingTags(parsed.tags);
-          }
-        })
-        .catch(() => {});
       return;
     }
 
-    // ── Non-URL text: if we already have PG listings, treat as buyer criteria for 2nd-round filtering ──
+    // ── Non-URL text: parse into tags via LLM (structured + semantic) ──
     if (pgListings.length > 0) {
-      setBuyerCriteria((prev) => prev ? `${prev}, ${text}` : text);
-      setToast(`🎯 Added filter criteria: "${text}"`);
-
-      // Still parse tags for the legacy mock results
-      searchApi.parse(text, source)
+      // Use LLM for parsing — much more flexible than regex
+      setToast('🧠 Understanding your requirements…');
+      searchApi.parseLlm(text, source)
         .then((response) => {
-          const parsedTags = response.tags || [];
-          if (parsedTags.length) {
-            applyIncomingTags(parsedTags);
+          const llmTags = response.tags || [];
+          if (llmTags.length) {
+            const result = applyIncomingTags(llmTags);
+            if (result.replacements.length) {
+              const latest = result.replacements[result.replacements.length - 1];
+              setToast(`${latest.label} updated: ${latest.from} → ${latest.to}`);
+            } else {
+              setToast(`🎯 ${result.addedCount} filter${result.addedCount > 1 ? 's' : ''} added to criteria.`);
+            }
+          } else {
+            setToast('Try mentioning location, budget, bedrooms, or specific requirements.');
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          // Fallback to local regex parsing if LLM fails
+          const localTags = parseCriteriaText(text, source);
+          if (localTags.length) {
+            const result = applyIncomingTags(localTags);
+            if (result.replacements.length) {
+              const latest = result.replacements[result.replacements.length - 1];
+              setToast(`${latest.label} updated: ${latest.from} → ${latest.to}`);
+            } else {
+              setToast(`🎯 ${result.addedCount} filter${result.addedCount > 1 ? 's' : ''} added (offline mode).`);
+            }
+          } else {
+            setToast('Try mentioning location, budget, bedrooms, or specific requirements.');
+          }
+        });
       return;
     }
 
@@ -1025,19 +1315,82 @@ export default function Search() {
     setToast(exists ? `Removed from shortlist · ${next.length} remaining` : `Saved to shortlist · ${next.length} total`);
   }
 
-  // ── Compute filtered PG listings based on buyer criteria ──
-  const filteredPgListings = useMemo(() => {
-    if (!pgListings.length) return [];
-    if (!buyerCriteria.trim()) return pgListings;
-    // Sort: passing listings first, then by match score
-    return [...pgListings].sort((a, b) => {
-      const aResult = aiFilterListing(a, buyerCriteria);
-      const bResult = aiFilterListing(b, buyerCriteria);
-      const aScore = aResult.matches.length / Math.max(aResult.matches.length + aResult.misses.length, 1);
-      const bScore = bResult.matches.length / Math.max(bResult.matches.length + bResult.misses.length, 1);
-      return bScore - aScore;
-    });
-  }, [pgListings, buyerCriteria]);
+  // ── Compute filtered PG listings based on tags (structured + LLM semantic) ──
+  const [filteredPgData, setFilteredPgData] = useState([]);
+
+  useEffect(() => {
+    if (!pgListings.length) {
+      setFilteredPgData([]);
+      return;
+    }
+
+    // Step 1: Immediate structural filtering (bedrooms, price, size, etc.)
+    const structuralResult = filterPgListingsWithTags(pgListings, tags);
+    setFilteredPgData(structuralResult);
+
+    // Step 2: If there are semantic tags, send to LLM for deeper evaluation
+    const userTags = tags.filter(t => t.source !== 'url');
+    const semanticTags = userTags.filter(t => t.kind === 'semantic');
+    if (!semanticTags.length) return;
+
+    // Build lightweight listing summaries for the LLM
+    const listingSummaries = structuralResult
+      .filter(d => d.aiResult.pass) // Only evaluate structurally-passing listings
+      .map(d => ({
+        id: d.listing.url || d.listing.id,
+        title: d.listing.title,
+        address: d.listing.address,
+        price: d.listing.price ? Number(d.listing.price) : undefined,
+        bedrooms: d.listing.bedrooms,
+        areaSqft: d.listing.areaSqft ? Number(d.listing.areaSqft) : undefined,
+        propertyType: d.listing.propertyType,
+        description: d.listing.detail?.description,
+        details: [
+          d.listing.detail?.furnishing,
+          d.listing.detail?.tenureDetail,
+          d.listing.detail?.propertyDetailsRaw,
+          d.listing.detail?.floorLevel,
+        ].filter(Boolean).join(' · '),
+      }));
+
+    if (!listingSummaries.length) return;
+
+    const criteriaLabels = semanticTags.map(t => t.label);
+
+    searchApi.filterLlm(listingSummaries, criteriaLabels)
+      .then((response) => {
+        const llmResults = response.results || [];
+        const llmMap = new Map(llmResults.map(r => [r.listingId, r]));
+
+        setFilteredPgData((prev) => {
+          const updated = prev.map(item => {
+            const llm = llmMap.get(item.listing.url || item.listing.id);
+            if (!llm) return item;
+
+            // Merge LLM results with structural results
+            return {
+              ...item,
+              aiResult: {
+                pass: item.aiResult.pass && llm.pass,
+                matches: [...item.aiResult.matches, ...llm.matches],
+                misses: [...item.aiResult.misses, ...llm.misses],
+              },
+              score: Math.round((item.score + llm.score) / 2),
+            };
+          });
+          // Re-sort: passing first, then by score
+          return updated.sort((a, b) => {
+            if (a.aiResult.pass !== b.aiResult.pass) return a.aiResult.pass ? -1 : 1;
+            return b.score - a.score;
+          });
+        });
+      })
+      .catch(() => {
+        // LLM failed — keep structural results only (already set)
+      });
+  }, [pgListings, tags]);
+
+  const filteredPgListings = filteredPgData.map(d => d.listing);
 
   function beginVoiceCapture() {
     setIsRecording(true);
@@ -1265,10 +1618,10 @@ export default function Search() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8, gap: 12 }}>
             <div>
               <div style={{ fontWeight: 600, fontSize: 16 }}>
-                {pgLoading ? '🔍 Scraping PropertyGuru…' : hasPgResults ? `${filteredPgListings.length} listings scraped` : hasResults ? `${results.length} listings matched` : tags.length ? 'No matches yet' : 'Start with a brief'}
+                {pgLoading ? '🔍 Scraping PropertyGuru…' : hasPgResults ? `${filteredPgListings.length} listings scraped${tags.length ? ` · ${filteredPgData.filter(d => d.aiResult.pass).length} match` : ''}` : hasResults ? `${results.length} listings matched` : tags.length ? 'No matches yet' : 'Start with a brief'}
               </div>
               <div style={{ fontSize: 12.5, color: AB.gray, marginTop: 3 }}>
-                {pgLoading ? 'Fetching listings with details from PropertyGuru (may take a minute)…' : hasPgResults ? 'Type buyer criteria below to narrow down.' : hasResults ? 'Results update instantly as criteria change.' : tags.length ? 'Loosen a filter or add an alternate location.' : 'Paste a PropertyGuru search URL, or describe what your buyer wants.'}
+                {pgLoading ? 'Fetching listings with details from PropertyGuru (may take a minute)…' : hasPgResults ? 'Type criteria below to narrow down — filters auto-apply.' : hasResults ? 'Results update instantly as criteria change.' : tags.length ? 'Loosen a filter or add an alternate location.' : 'Paste a PropertyGuru search URL, or describe what your buyer wants.'}
               </div>
             </div>
             {hasResults && (
@@ -1323,39 +1676,8 @@ export default function Search() {
           {/* ── PG scraped results ── */}
           {hasPgResults && (
             <>
-              {/* Buyer criteria input for 2nd-round AI filtering */}
-              <div style={{ marginBottom: 14, padding: '10px 14px', borderRadius: 16, background: '#F0F8FF', border: '1px solid #D0E8FF' }}>
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', color: AB.babu, marginBottom: 6 }}>
-                  🎯 Buyer's requirements (2nd-round filter)
-                </div>
-                <div style={{ fontSize: 12, color: AB.gray, marginBottom: 8, lineHeight: 1.4 }}>
-                  Describe what your buyer wants. Listings will be scored against their description.
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <input
-                    value={buyerCriteria}
-                    onChange={e => setBuyerCriteria(e.target.value)}
-                    placeholder='e.g. "south-facing, pet friendly, modern renovation, near MRT"'
-                    style={{ flex: 1, padding: '8px 12px', borderRadius: 12, border: `1px solid ${AB.border}`, fontSize: 13 }}
-                  />
-                  {buyerCriteria && (
-                    <button
-                      onClick={() => setBuyerCriteria('')}
-                      style={{ border: 0, background: 'transparent', fontSize: 16, color: AB.gray, cursor: 'pointer', padding: '0 4px' }}
-                    >×</button>
-                  )}
-                </div>
-                {buyerCriteria && (
-                  <div style={{ marginTop: 6, fontSize: 11.5, color: AB.gray }}>
-                    Active: {buyerCriteria.split(/[,;]+/).filter(Boolean).length} criteria ·
-                    {filteredPgListings.filter(l => aiFilterListing(l, buyerCriteria).pass).length} pass /
-                    {filteredPgListings.filter(l => !aiFilterListing(l, buyerCriteria).pass).length} miss
-                  </div>
-                )}
-              </div>
-
               <div>
-                {filteredPgListings.map((listing) => (
+                {filteredPgData.map(({ listing, aiResult, score }) => (
                   <PGListingCard
                     key={listing.url}
                     listing={listing}
@@ -1363,7 +1685,8 @@ export default function Search() {
                     onToggleShortlist={togglePgShortlist}
                     onGetPhone={handleGetPhone}
                     phoneLoading={phoneLoadingUrls.has(listing.url)}
-                    buyerCriteria={buyerCriteria}
+                    aiResult={aiResult}
+                    matchScore={score}
                   />
                 ))}
               </div>
