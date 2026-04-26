@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Chip from '../components/Chip';
-import { searchApi } from '../lib/api';
+import { searchApi, scrapeApi } from '../lib/api';
 import { AB, LISTINGS } from '../data';
 import { useAppNav } from '../navigation';
 
@@ -490,6 +490,214 @@ function CriteriaTag({ tag, onRemove }) {
   );
 }
 
+/* ─── PG scraped listing helpers ─── */
+
+function formatPgPrice(price) {
+  if (!price) return '—';
+  return `S$${Number(price).toLocaleString('en-SG')}`;
+}
+
+/** Simple keyword-based AI filter against description + all detail fields.
+ *  Returns { pass: boolean, matches: string[], misses: string[] } */
+function aiFilterListing(listing, buyerCriteria) {
+  if (!buyerCriteria.trim()) return { pass: true, matches: [], misses: [] };
+
+  const corpus = [
+    listing.title,
+    listing.address,
+    listing.detail?.description,
+    listing.detail?.furnishing,
+    listing.detail?.tenureDetail,
+    listing.detail?.propertyDetailsRaw,
+    listing.rawText,
+    listing.detail?.floorLevel,
+    ...(Object.values(listing.detail?.allDetails || {})),
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  // Extract individual requirements from the buyer's criteria
+  const keywords = buyerCriteria
+    .toLowerCase()
+    .split(/[,;.\n]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const matches = [];
+  const misses = [];
+
+  for (const kw of keywords) {
+    // Split multi-word criteria into key terms and check if ALL are present
+    const terms = kw.split(/\s+/).filter(t => t.length > 2);
+    const found = terms.every(term => corpus.includes(term));
+    if (found) {
+      matches.push(kw);
+    } else {
+      misses.push(kw);
+    }
+  }
+
+  return {
+    pass: misses.length === 0,
+    matches,
+    misses,
+  };
+}
+
+function PGListingCard({ listing, shortlisted, onToggleShortlist, onGetPhone, phoneLoading, buyerCriteria }) {
+  const [expanded, setExpanded] = useState(false);
+  const detail = listing.detail || {};
+  const aiResult = buyerCriteria ? aiFilterListing(listing, buyerCriteria) : null;
+  const matchScore = aiResult && buyerCriteria
+    ? Math.round(((aiResult.matches.length) / Math.max(aiResult.matches.length + aiResult.misses.length, 1)) * 100)
+    : null;
+  const dimmed = aiResult && !aiResult.pass;
+
+  return (
+    <div
+      style={{
+        padding: '14px 0',
+        borderTop: `1px solid ${AB.border}`,
+        opacity: dimmed ? 0.5 : 1,
+        transition: 'opacity 200ms ease',
+      }}
+    >
+      {/* Header row */}
+      <div style={{ display: 'flex', gap: 12 }}>
+        <div
+          onClick={() => setExpanded(v => !v)}
+          style={{
+            width: 84,
+            height: 84,
+            borderRadius: 16,
+            flexShrink: 0,
+            background: `linear-gradient(135deg, ${AB.babu}20, ${AB.babu}45)`,
+            position: 'relative',
+            overflow: 'hidden',
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ position: 'absolute', inset: 0, backgroundImage: `repeating-linear-gradient(-45deg, ${AB.babu}18 0 6px, transparent 6px 12px)` }} />
+          <div style={{ position: 'absolute', left: 8, bottom: 8, fontSize: 9, fontWeight: 700, letterSpacing: 0.5, color: AB.babu, textTransform: 'uppercase' }}>
+            {listing.detail?.propertyCategory?.replace(/for (sale|rent)/i, '').trim() || listing.propertyType || 'PG'}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div
+                  style={{ fontWeight: 600, fontSize: 14, lineHeight: 1.3, cursor: 'pointer' }}
+                  onClick={() => window.open(listing.url, '_blank', 'noopener,noreferrer')}
+                >
+                  {listing.title}
+                </div>
+              </div>
+              {listing.address && (
+                <div style={{ fontSize: 12, color: AB.gray, marginTop: 2 }}>{listing.address}</div>
+              )}
+              <div style={{ fontSize: 12.5, color: AB.ink, fontWeight: 600, marginTop: 3 }}>
+                {formatPgPrice(listing.price)}
+                {listing.psfLabel ? ` · ${listing.psfLabel}` : ''}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+              {matchScore !== null && (
+                <div style={{ fontSize: 12, fontWeight: 700, color: aiResult.pass ? AB.babu : AB.hack }}>{matchScore}%</div>
+              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); onToggleShortlist(listing.url); }}
+                aria-label={shortlisted ? 'Remove from shortlist' : 'Add to shortlist'}
+                style={{
+                  border: 0, background: 'transparent', padding: 0,
+                  width: 24, height: 24, display: 'grid', placeItems: 'center', cursor: 'pointer',
+                  color: shortlisted ? AB.rausch : AB.gray2,
+                }}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill={shortlisted ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m12 21-1.45-1.32C5.4 15.01 2 11.93 2 8.15 2 5.08 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.08 22 8.15c0 3.78-3.4 6.86-8.55 11.54L12 21Z" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Tags row */}
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
+            {listing.bedrooms && <Chip>{listing.bedrooms} Bed</Chip>}
+            {listing.bathrooms && <Chip>{listing.bathrooms} Bath</Chip>}
+            {listing.areaSqft && <Chip>{listing.areaSqft} sqft</Chip>}
+            {detail.tenureDetail && <Chip>{detail.tenureDetail}</Chip>}
+            {detail.furnishing && <Chip>{detail.furnishing}</Chip>}
+          </div>
+
+          {/* AI match indicators */}
+          {aiResult && buyerCriteria && (
+            <div style={{ marginTop: 6, fontSize: 11.5, lineHeight: 1.4 }}>
+              {aiResult.matches.map(m => (
+                <span key={m} style={{ color: AB.babu, marginRight: 8 }}>✅ {m}</span>
+              ))}
+              {aiResult.misses.map(m => (
+                <span key={m} style={{ color: AB.hack, marginRight: 8 }}>⚠️ {m}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Agent row + phone button */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, paddingLeft: 96, gap: 8 }}>
+        <div style={{ fontSize: 12, color: AB.gray }}>
+          🏠 {listing.agent || detail.agentName || 'Agent unknown'}
+          {detail.agentPhone && (
+            <a href={`https://wa.me/${detail.agentPhone.replace(/[^0-9]/g, '')}`} target="_blank" rel="noopener noreferrer"
+              style={{ marginLeft: 8, color: '#25D366', fontWeight: 600, textDecoration: 'none' }}>
+              📱 {detail.agentPhone}
+            </a>
+          )}
+        </div>
+        {!detail.agentPhone && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onGetPhone(listing.url); }}
+            disabled={phoneLoading}
+            style={{
+              border: `1px solid ${AB.border}`, borderRadius: 999, background: '#FBFBFB',
+              padding: '5px 10px', fontSize: 11, fontWeight: 600, cursor: phoneLoading ? 'wait' : 'pointer',
+              color: AB.ink, whiteSpace: 'nowrap',
+            }}
+          >
+            {phoneLoading ? '⏳ Getting...' : '📞 Get WhatsApp'}
+          </button>
+        )}
+      </div>
+
+      {/* Expandable detail section */}
+      <div style={{ paddingLeft: 96, marginTop: 6 }}>
+        <button
+          onClick={() => setExpanded(v => !v)}
+          style={{ border: 0, background: 'transparent', padding: 0, fontSize: 12, color: AB.babu, fontWeight: 600, cursor: 'pointer' }}
+        >
+          {expanded ? '▲ Hide details' : '▼ View details'}
+        </button>
+        {expanded && detail.description && (
+          <div style={{
+            marginTop: 8, padding: 12, borderRadius: 14, background: '#F7F7F7',
+            fontSize: 12.5, color: AB.ink, lineHeight: 1.6, maxHeight: 200, overflowY: 'auto',
+          }}>
+            {detail.description.slice(0, 800)}{detail.description.length > 800 ? '…' : ''}
+          </div>
+        )}
+        {expanded && detail.allDetails && (
+          <div style={{ marginTop: 8, display: 'grid', gap: 4, fontSize: 12 }}>
+            {Object.entries(detail.allDetails).map(([k, v]) => (
+              <div key={k}><span style={{ color: AB.gray }}>{k}:</span> <span style={{ fontWeight: 500 }}>{v}</span></div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ListingCard({ listing, shortlisted, onToggleShortlist }) {
   function openListing() {
     window.open(listing.listingUrl, '_blank', 'noopener,noreferrer');
@@ -598,6 +806,14 @@ export default function Search() {
   const [toast, setToast] = useState('');
   const [results, setResults] = useState([]);
 
+  // ── PG live scraping state ──
+  const [pgListings, setPgListings] = useState([]); // scraped PG listings (raw from API)
+  const [pgLoading, setPgLoading] = useState(false); // true while scraping
+  const [pgError, setPgError] = useState('');
+  const [buyerCriteria, setBuyerCriteria] = useState(''); // natural-language criteria for 2nd-round filtering
+  const [pgShortlistedUrls, setPgShortlistedUrls] = useState([]); // shortlisted by URL
+  const [phoneLoadingUrls, setPhoneLoadingUrls] = useState(new Set()); // URLs currently fetching phone
+
   const recognitionRef = useRef(null);
   const shouldCommitVoiceRef = useRef(false);
   const pendingVoiceTextRef = useRef('');
@@ -683,6 +899,58 @@ export default function Search() {
 
     setTranscript((current) => [...current, { id: makeId('turn'), from: 'user', source, text }]);
 
+    // ── PG URL → trigger real scraping ──
+    if (isProbablyUrl(text) && text.includes('propertyguru.com')) {
+      setPgLoading(true);
+      setPgError('');
+      setToast('🔍 Scraping PropertyGuru listings (limit 5, with details)…');
+
+      scrapeApi.listings(text, { limit: 5 })
+        .then((result) => {
+          const listings = result.listings || [];
+          setPgListings(listings);
+          setPgLoading(false);
+          if (listings.length) {
+            setToast(`✅ Scraped ${listings.length} listings from PropertyGuru.`);
+          } else {
+            setToast('No listings found at that URL.');
+          }
+        })
+        .catch((err) => {
+          setPgLoading(false);
+          setPgError(err.message || 'Scraping failed');
+          setToast('⚠️ Scraping failed — check the URL or try again.');
+        });
+
+      // Also run legacy import for tag extraction
+      searchApi.importLink(text)
+        .then((parsed) => {
+          if (parsed.tags?.length) {
+            applyIncomingTags(parsed.tags);
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+
+    // ── Non-URL text: if we already have PG listings, treat as buyer criteria for 2nd-round filtering ──
+    if (pgListings.length > 0) {
+      setBuyerCriteria((prev) => prev ? `${prev}, ${text}` : text);
+      setToast(`🎯 Added filter criteria: "${text}"`);
+
+      // Still parse tags for the legacy mock results
+      searchApi.parse(text, source)
+        .then((response) => {
+          const parsedTags = response.tags || [];
+          if (parsedTags.length) {
+            applyIncomingTags(parsedTags);
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+
+    // ── Fallback: legacy URL import or text parse ──
     if (isProbablyUrl(text)) {
       searchApi.importLink(text)
         .then((parsed) => {
@@ -723,6 +991,53 @@ export default function Search() {
       })
       .catch(() => setToast('Search parsing is unavailable right now.'));
   }
+
+  // ── Fetch phone number for a single listing URL ──
+  function handleGetPhone(url) {
+    setPhoneLoadingUrls(prev => new Set([...prev, url]));
+    scrapeApi.phones([url])
+      .then((res) => {
+        const phoneResult = res.results?.[0];
+        if (phoneResult?.agentPhone) {
+          // Update the listing in state with the phone number
+          setPgListings(prev => prev.map(l => {
+            if (l.url === url) {
+              return {
+                ...l,
+                detail: { ...l.detail, agentPhone: phoneResult.agentPhone, agentName: phoneResult.agentName || l.detail?.agentName },
+              };
+            }
+            return l;
+          }));
+          setToast(`📞 Got number: ${phoneResult.agentPhone}`);
+        } else {
+          setToast('⚠️ Phone number not found (may need login — run npm run pg:login first)');
+        }
+      })
+      .catch(() => setToast('⚠️ Failed to fetch phone number'))
+      .finally(() => setPhoneLoadingUrls(prev => { const n = new Set(prev); n.delete(url); return n; }));
+  }
+
+  function togglePgShortlist(url) {
+    const exists = pgShortlistedUrls.includes(url);
+    const next = exists ? pgShortlistedUrls.filter(u => u !== url) : [...pgShortlistedUrls, url];
+    setPgShortlistedUrls(next);
+    setToast(exists ? `Removed from shortlist · ${next.length} remaining` : `Saved to shortlist · ${next.length} total`);
+  }
+
+  // ── Compute filtered PG listings based on buyer criteria ──
+  const filteredPgListings = useMemo(() => {
+    if (!pgListings.length) return [];
+    if (!buyerCriteria.trim()) return pgListings;
+    // Sort: passing listings first, then by match score
+    return [...pgListings].sort((a, b) => {
+      const aResult = aiFilterListing(a, buyerCriteria);
+      const bResult = aiFilterListing(b, buyerCriteria);
+      const aScore = aResult.matches.length / Math.max(aResult.matches.length + aResult.misses.length, 1);
+      const bScore = bResult.matches.length / Math.max(bResult.matches.length + bResult.misses.length, 1);
+      return bScore - aScore;
+    });
+  }, [pgListings, buyerCriteria]);
 
   function beginVoiceCapture() {
     setIsRecording(true);
@@ -789,8 +1104,9 @@ export default function Search() {
   }
 
   const previewTags = tags.length > 5 ? tags.slice(0, 4) : tags;
-  const hasResults = results.length > 0;
-  const shortlistedCount = shortlistedIds.length;
+  const hasPgResults = filteredPgListings.length > 0;
+  const hasResults = results.length > 0 || hasPgResults;
+  const shortlistedCount = shortlistedIds.length + pgShortlistedUrls.length;
 
   function toggleShortlist(listingId) {
     const exists = shortlistedIds.includes(listingId);
@@ -948,14 +1264,16 @@ export default function Search() {
         <div style={{ padding: '18px 20px 18px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8, gap: 12 }}>
             <div>
-              <div style={{ fontWeight: 600, fontSize: 16 }}>{hasResults ? `${results.length} listings matched` : tags.length ? 'No matches yet' : 'Start with a brief'}</div>
+              <div style={{ fontWeight: 600, fontSize: 16 }}>
+                {pgLoading ? '🔍 Scraping PropertyGuru…' : hasPgResults ? `${filteredPgListings.length} listings scraped` : hasResults ? `${results.length} listings matched` : tags.length ? 'No matches yet' : 'Start with a brief'}
+              </div>
               <div style={{ fontSize: 12.5, color: AB.gray, marginTop: 3 }}>
-                {hasResults ? 'Results update instantly as criteria change.' : tags.length ? 'Loosen a filter or add an alternate location.' : 'Voice, text and URL imports all flow into the same criteria engine.'}
+                {pgLoading ? 'Fetching listings with details from PropertyGuru (may take a minute)…' : hasPgResults ? 'Type buyer criteria below to narrow down.' : hasResults ? 'Results update instantly as criteria change.' : tags.length ? 'Loosen a filter or add an alternate location.' : 'Paste a PropertyGuru search URL, or describe what your buyer wants.'}
               </div>
             </div>
             {hasResults && (
               <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: 12, color: AB.gray }}>ranked by AI fit</div>
+                <div style={{ fontSize: 12, color: AB.gray }}>{hasPgResults ? 'from PG' : 'ranked by AI fit'}</div>
                 <div style={{ fontSize: 12.5, fontWeight: 600, color: shortlistedCount ? AB.rausch : AB.gray, marginTop: 4 }}>
                   {shortlistedCount} shortlisted
                 </div>
@@ -963,7 +1281,97 @@ export default function Search() {
             )}
           </div>
 
-          {hasResults ? (
+          {pgError && (
+            <div style={{ padding: '10px 14px', borderRadius: 14, background: '#FFF3F0', color: AB.hack, fontSize: 13, marginBottom: 12 }}>
+              ⚠️ {pgError}
+            </div>
+          )}
+
+          {/* ── PG loading skeleton ── */}
+          {pgLoading && (
+            <div style={{ display: 'grid', gap: 12, marginTop: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <div style={{ fontSize: 12.5, color: AB.gray }}>
+                  🌐 Opening Chrome and navigating to PropertyGuru…
+                </div>
+                <button
+                  onClick={() => {
+                    setPgLoading(false);
+                    setPgError('Scraping cancelled by user.');
+                    setToast('Scraping cancelled.');
+                  }}
+                  style={{
+                    border: 'none',
+                    background: '#F3F3F3',
+                    borderRadius: 10,
+                    padding: '4px 12px',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: AB.hack || '#c13515',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+              {[1, 2, 3].map(i => (
+                <div key={i} style={{ height: 80, borderRadius: 16, background: '#F3F3F3', animation: 'pulse 1.5s ease-in-out infinite' }} />
+              ))}
+            </div>
+          )}
+
+          {/* ── PG scraped results ── */}
+          {hasPgResults && (
+            <>
+              {/* Buyer criteria input for 2nd-round AI filtering */}
+              <div style={{ marginBottom: 14, padding: '10px 14px', borderRadius: 16, background: '#F0F8FF', border: '1px solid #D0E8FF' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', color: AB.babu, marginBottom: 6 }}>
+                  🎯 Buyer's requirements (2nd-round filter)
+                </div>
+                <div style={{ fontSize: 12, color: AB.gray, marginBottom: 8, lineHeight: 1.4 }}>
+                  Describe what your buyer wants. Listings will be scored against their description.
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    value={buyerCriteria}
+                    onChange={e => setBuyerCriteria(e.target.value)}
+                    placeholder='e.g. "south-facing, pet friendly, modern renovation, near MRT"'
+                    style={{ flex: 1, padding: '8px 12px', borderRadius: 12, border: `1px solid ${AB.border}`, fontSize: 13 }}
+                  />
+                  {buyerCriteria && (
+                    <button
+                      onClick={() => setBuyerCriteria('')}
+                      style={{ border: 0, background: 'transparent', fontSize: 16, color: AB.gray, cursor: 'pointer', padding: '0 4px' }}
+                    >×</button>
+                  )}
+                </div>
+                {buyerCriteria && (
+                  <div style={{ marginTop: 6, fontSize: 11.5, color: AB.gray }}>
+                    Active: {buyerCriteria.split(/[,;]+/).filter(Boolean).length} criteria ·
+                    {filteredPgListings.filter(l => aiFilterListing(l, buyerCriteria).pass).length} pass /
+                    {filteredPgListings.filter(l => !aiFilterListing(l, buyerCriteria).pass).length} miss
+                  </div>
+                )}
+              </div>
+
+              <div>
+                {filteredPgListings.map((listing) => (
+                  <PGListingCard
+                    key={listing.url}
+                    listing={listing}
+                    shortlisted={pgShortlistedUrls.includes(listing.url)}
+                    onToggleShortlist={togglePgShortlist}
+                    onGetPhone={handleGetPhone}
+                    phoneLoading={phoneLoadingUrls.has(listing.url)}
+                    buyerCriteria={buyerCriteria}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* ── Legacy mock results (when no PG listings) ── */}
+          {!hasPgResults && !pgLoading && hasResults && (
             <div>
               {results.map((listing) => (
                 <ListingCard
@@ -974,18 +1382,24 @@ export default function Search() {
                 />
               ))}
             </div>
-          ) : (
+          )}
+
+          {/* ── Empty state ── */}
+          {!hasResults && !pgLoading && (
             <div style={{ marginTop: 18, border: `1px solid ${AB.border}`, borderRadius: 24, padding: 18, background: '#FBFBFB' }}>
               <div style={{ fontFamily: '"Playfair Display", Georgia, serif', fontSize: 26, fontWeight: 600, lineHeight: 1.05, letterSpacing: -0.5 }}>
                 Search now starts as a conversation.
               </div>
               <div style={{ fontSize: 14, color: AB.gray, lineHeight: 1.6, marginTop: 10 }}>
-                Hold the mic to talk, switch to typing like WeChat, or paste a PropertyGuru URL. Butler turns everything into editable criteria chips above the listings.
+                Paste a PropertyGuru search URL to scrape real listings, or hold the mic / type to describe what your buyer wants. Butler fetches listings, extracts details, and lets you filter them.
               </div>
 
               <div style={{ display: 'grid', gap: 10, marginTop: 16 }}>
                 <button
-                  onClick={() => handleIncomingInput(DEMO_VOICE_INPUTS[0], 'voice')}
+                  onClick={() => {
+                    setInputMode('text');
+                    setDraft('https://www.propertyguru.com.sg/property-for-sale?market=residential&listing_type=sale&search=true');
+                  }}
                   style={{
                     border: 0,
                     borderRadius: 16,
@@ -996,13 +1410,10 @@ export default function Search() {
                     textAlign: 'left',
                   }}
                 >
-                  Try the demo brief
+                  📎 Try a sample PG search URL
                 </button>
                 <button
-                  onClick={() => {
-                    setInputMode('text');
-                    setDraft(URL_SAMPLE);
-                  }}
+                  onClick={() => handleIncomingInput(DEMO_VOICE_INPUTS[0], 'voice')}
                   style={{
                     border: `1px solid ${AB.border}`,
                     borderRadius: 16,
@@ -1011,7 +1422,7 @@ export default function Search() {
                     textAlign: 'left',
                   }}
                 >
-                  Paste a sample PropertyGuru link
+                  🎙 Try the demo voice brief
                 </button>
               </div>
             </div>

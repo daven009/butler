@@ -505,6 +505,9 @@ function tagMatchesListing(tag: any, listing: CatalogListing) {
 }
 
 export function searchCatalog(tags: any[], pinnedIds: string[] = []) {
+  // No tags and no pinned listings → return empty (don't show mock catalog)
+  if (!tags.length && !pinnedIds.length) return [];
+
   const pinned = new Set(pinnedIds);
   const groupedTags = tags.reduce((acc: Record<string, any[]>, tag: any) => {
     acc[tag.groupKey] = acc[tag.groupKey] || [];

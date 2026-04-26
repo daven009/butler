@@ -80,6 +80,54 @@ export const searchApi = {
   results: (tags, linkedListingIds = []) => api.post('/api/search/results', { tags, linkedListingIds }),
 };
 
+async function requestWithTimeout(path, options = {}, timeoutMs = 150000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+      ...options,
+      signal: controller.signal,
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data?.error?.message || 'Request failed');
+      error.code = data?.error?.code;
+      error.fields = data?.error?.fields;
+      throw error;
+    }
+    return data;
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('Request timed out — the scraping took too long. Try again or use a different URL.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export const scrapeApi = {
+  /** Scrape PropertyGuru search results (with details for AI filtering) */
+  listings: (url, { limit = 20, debug = false } = {}) =>
+    requestWithTimeout('/api/scrape/propertyguru', {
+      method: 'POST',
+      body: JSON.stringify({ url, limit, scrapeDetails: true, debug }),
+    }, 660000), // 11 min timeout for scraping (backend has 10 min limit)
+
+  /** Scrape agent phone/WhatsApp numbers for specific listing URLs */
+  phones: (urls, { debug = false } = {}) =>
+    requestWithTimeout('/api/scrape/propertyguru/phones', {
+      method: 'POST',
+      body: JSON.stringify({ urls, debug }),
+    }, 120000), // 2 min timeout for phone scraping
+};
+
 export const calendarApi = {
   month: (month) => api.get(`/api/calendar?month=${encodeURIComponent(month)}`),
   day: (date) => api.get(`/api/calendar/day?date=${encodeURIComponent(date)}`),
