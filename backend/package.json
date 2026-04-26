@@ -12,7 +12,9 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^4.21.2",
+    "openai": "^6.34.0",
     "playwright": "^1.59.1"
   },
   "devDependencies": {

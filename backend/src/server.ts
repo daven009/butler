@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import {
@@ -47,6 +48,13 @@ import {
   updateThreadOwnership
 } from './lib/repositories/butlerRepository';
 import { scrapePropertyGuruSearch } from './lib/scrapers/propertyGuru';
+import { llmParseCriteria, llmFilterListings } from './lib/llm/criteriaParser';
+import {
+  upsertPgListings,
+  getAllPgListings,
+  getPgListingsByIds,
+  findExistingListingIds,
+} from './lib/repositories/pgListingsRepository';
 import {
   createClient,
   deleteClient,
@@ -379,6 +387,50 @@ app.post('/api/search/results', (req, res) => {
   res.status(200).json({ results: searchCatalog(tags, linkedListingIds) });
 });
 
+// ── LLM-powered search parsing ──
+// POST /api/search/parse-llm — Use LLM to parse natural language into structured tags
+app.post('/api/search/parse-llm', async (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+  const text = String(req.body.text || '').trim();
+  if (!text) {
+    return res.status(200).json({ tags: [] });
+  }
+  const source = req.body.source === 'voice' ? 'voice' : 'text';
+  try {
+    const tags = await llmParseCriteria(text, source as 'text' | 'voice');
+    res.status(200).json({ tags });
+  } catch (err: any) {
+    console.error('[LLM parse] Error:', err.message);
+    // Fallback to regex-based parsing if LLM fails
+    res.status(200).json({ tags: parseSearchInput(text, source as 'voice' | 'text'), fallback: true });
+  }
+});
+
+// POST /api/search/filter-llm — Use LLM to semantically evaluate listings against criteria
+app.post('/api/search/filter-llm', async (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+  const listings = Array.isArray(req.body.listings) ? req.body.listings : [];
+  const criteria = Array.isArray(req.body.criteria) ? req.body.criteria : [];
+  if (!listings.length || !criteria.length) {
+    return res.status(200).json({
+      results: listings.map((l: any) => ({
+        listingId: l.id,
+        pass: true,
+        score: 100,
+        matches: [],
+        misses: [],
+      })),
+    });
+  }
+  try {
+    const results = await llmFilterListings(listings, criteria);
+    res.status(200).json({ results });
+  } catch (err: any) {
+    console.error('[LLM filter] Error:', err.message);
+    return sendError(res, 500, 'LLM_ERROR', 'LLM filtering failed: ' + err.message);
+  }
+});
+
 // ── PropertyGuru scraping endpoints ──
 
 // POST /api/scrape/propertyguru — Scrape listing search results (with optional detail pages)
@@ -391,29 +443,67 @@ app.post('/api/scrape/propertyguru', async (req, res) => {
   }
 
   // Wrap scraping in a timeout to prevent infinite hangs
-  const SCRAPE_TIMEOUT_MS = 600_000; // 10 minutes max (detail scraping is slow)
+  const scrapeDetails = Boolean(req.body.scrapeDetails);
+  const SCRAPE_TIMEOUT_MS = scrapeDetails ? 600_000 : 120_000; // 10 min with details, 2 min without
 
   try {
     const scrapePromise = scrapePropertyGuruSearch({
       url,
       limit: Math.min(Number(req.body.limit) || 20, 100),
       headless: Boolean(req.body.headless), // default headed for better CF bypass
-      scrapeDetails: req.body.scrapeDetails !== false, // default ON — we need description for AI filtering
+      scrapeDetails, // OFF by default — list page info is enough for initial display
       scrapePhone: false, // phone scraping is a separate endpoint
       debug: Boolean(req.body.debug),
       timeoutMs: 90_000, // per-operation timeout (CF challenges can be slow)
     });
 
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Scraping timed out after 10 minutes. The website may be blocking automated access.')), SCRAPE_TIMEOUT_MS)
+      setTimeout(() => reject(new Error(`Scraping timed out after ${scrapeDetails ? 10 : 2} minutes. The website may be blocking automated access.`)), SCRAPE_TIMEOUT_MS)
     );
 
     const result = await Promise.race([scrapePromise, timeoutPromise]);
-    return res.status(200).json(result);
+
+    // ── Persist scraped listings to JSON store ──
+    const listings = result.listings || [];
+    const dbResult = listings.length
+      ? upsertPgListings(listings as any[], url)
+      : { inserted: 0, updated: 0, total: 0 };
+
+    return res.status(200).json({
+      ...result,
+      db: dbResult, // { inserted, updated, total } — tells frontend how many were new vs cached
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to scrape PropertyGuru';
     return sendError(res, 500, 'PROPERTYGURU_SCRAPE_FAILED', message);
   }
+});
+
+// GET /api/pg-listings — Get all stored PG listings from the database
+app.get('/api/pg-listings', (_req, res) => {
+  const stored = getAllPgListings();
+  res.status(200).json({ listings: stored, total: stored.length });
+});
+
+// POST /api/pg-listings/check — Check which listing IDs already exist in the database
+// Body: { listingIds: string[] }
+// Returns: { existing: string[], newIds: string[] }
+app.post('/api/pg-listings/check', (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+  const ids: string[] = Array.isArray(req.body.listingIds) ? req.body.listingIds : [];
+  const existingSet = findExistingListingIds(ids);
+  const existing = ids.filter((id) => existingSet.has(id));
+  const newIds = ids.filter((id) => !existingSet.has(id));
+  res.status(200).json({ existing, newIds, existingCount: existing.length, newCount: newIds.length });
+});
+
+// POST /api/pg-listings/by-ids — Get stored listings by their IDs
+// Body: { listingIds: string[] }
+app.post('/api/pg-listings/by-ids', (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+  const ids: string[] = Array.isArray(req.body.listingIds) ? req.body.listingIds : [];
+  const found = getPgListingsByIds(ids);
+  res.status(200).json({ listings: found, total: found.length });
 });
 
 // POST /api/scrape/propertyguru/phones — Scrape agent phone numbers for specific listing URLs
