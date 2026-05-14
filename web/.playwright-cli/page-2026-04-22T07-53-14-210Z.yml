@@ -1,0 +1,59 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]: butler.ai · mobile tour planner
+    - heading "A coordination room for property agents." [level=1] [ref=e6]
+    - paragraph [ref=e7]: Every screen from the original concept now lives as a routed React page inside a single iOS frame.
+  - generic [ref=e10]:
+    - generic [ref=e13]:
+      - generic [ref=e15]: 9:41
+      - generic [ref=e16]:
+        - img [ref=e17]
+        - img [ref=e22]
+        - img [ref=e26]
+    - generic [ref=e238]:
+      - generic [ref=e239]:
+        - button [ref=e240] [cursor=pointer]:
+          - img [ref=e241]
+        - generic [ref=e243]:
+          - generic [ref=e244]: Buyer preview
+          - generic [ref=e245]: Choose who should receive this shortlist
+        - generic [ref=e246]: 1 shortlisted
+      - generic [ref=e247]:
+        - generic [ref=e248]:
+          - generic [ref=e249]: Step 1
+          - generic [ref=e250]: Who should receive this shortlist?
+          - generic [ref=e251]: Pick an existing client or add a new buyer. The matching details will appear below right away.
+          - generic [ref=e252]:
+            - button "Existing client Reuse a client already in Butler" [ref=e253] [cursor=pointer]:
+              - generic [ref=e254]: Existing client
+              - generic [ref=e255]: Reuse a client already in Butler
+            - button "Add new client Create a one-off buyer profile" [ref=e256] [cursor=pointer]:
+              - generic [ref=e257]: Add new client
+              - generic [ref=e258]: Create a one-off buyer profile
+        - generic [ref=e259]:
+          - generic [ref=e261]: Choose an existing client
+          - button "陈 Chen family 3BR Rental AI confirmed 4 of 6 viewings · Sarah Lim needs your call" [ref=e262] [cursor=pointer]:
+            - generic [ref=e263]: 陈
+            - generic [ref=e264]:
+              - generic [ref=e265]: Chen family
+              - generic [ref=e266]: 3BR Rental
+              - generic [ref=e267]: AI confirmed 4 of 6 viewings · Sarah Lim needs your call
+          - button "R Rishi Patel Condo · Sale Awaiting buyer to pick shortlist" [ref=e270] [cursor=pointer]:
+            - generic [ref=e271]: R
+            - generic [ref=e272]:
+              - generic [ref=e273]: Rishi Patel
+              - generic [ref=e274]: Condo · Sale
+              - generic [ref=e275]: Awaiting buyer to pick shortlist
+          - button "H Hazel Koh HDB · Rental Tour confirmed for Sun 7pm · sent to buyer" [ref=e277] [cursor=pointer]:
+            - generic [ref=e278]: H
+            - generic [ref=e279]:
+              - generic [ref=e280]: Hazel Koh
+              - generic [ref=e281]: HDB · Rental
+              - generic [ref=e282]: Tour confirmed for Sun 7pm · sent to buyer
+          - button "N Ng family Landed · Sale Shortlist sent · waiting on availability" [ref=e284] [cursor=pointer]:
+            - generic [ref=e285]: "N"
+            - generic [ref=e286]:
+              - generic [ref=e287]: Ng family
+              - generic [ref=e288]: Landed · Sale
+              - generic [ref=e289]: Shortlist sent · waiting on availability
+      - button "Next" [ref=e293] [cursor=pointer]
