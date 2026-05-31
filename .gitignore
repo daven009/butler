@@ -1,18 +1,64 @@
+# ─── Dependencies ───────────────────────────────────────
 node_modules/
-.next/
-frontend/.next/
-dist/
-frontend/dist/
-frontend/.vite/
-backend/dist/
+**/node_modules/
 
+# ─── Build outputs ──────────────────────────────────────
+dist/
+**/dist/
+.next/
+**/.next/
+**/.vite/
+**/.vite-temp/
+build/
+**/build/
+
+# ─── Environment / secrets (NEVER commit) ───────────────
 .env
 .env.local
-frontend/.env.local
-frontend/.env
+.env.production
+.env.*.local
+**/.env
+**/.env.local
+**/.env.production
+**/.env.*.local
 
-frontend/certificates/
+# ─── Logs ───────────────────────────────────────────────
+.logs/
+**/.logs/
+*.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Playwright browser profile cache
+# ─── OS / IDE ───────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ─── Certificates ───────────────────────────────────────
+frontend/certificates/
+**/certificates/
+
+# ─── Browser automation caches ──────────────────────────
 backend/.playwright/
+**/.playwright/
+**/.playwright-cli/
+
+# ─── Local data / caches (per-developer state) ──────────
+backend/data/butler-web-store.json
+backend/data/geocode-cache.json
+
+# ─── Recovery / archive (kept locally, never pushed) ────
+_archive_*/
+_recovered/
+*.before-restore
+*.before-update
+*.before-multitenant
+*.bak
+
+# ─── Large local-only artifacts ─────────────────────────
+appointment-scheduler.tar.gz
+*.tar.gz
+debug_video/

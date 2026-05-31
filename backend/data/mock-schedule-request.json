@@ -1,0 +1,98 @@
+{
+  "buyerLocation": {
+    "address": "1 Fusionopolis Way, Singapore",
+    "lat": 1.2996,
+    "lng": 103.7894
+  },
+  "buyerSlots": [
+    { "date": "2026-05-03", "startTime": "09:00", "endTime": "12:00" },
+    { "date": "2026-05-03", "startTime": "14:00", "endTime": "18:00" },
+    { "date": "2026-05-04", "startTime": "10:00", "endTime": "14:00" }
+  ],
+  "listings": [
+    {
+      "listingId": "500111170",
+      "address": "10 Hillview Rise",
+      "agentName": "Charles Chua",
+      "agentCompany": "PROPNEX REALTY PTE. LTD.",
+      "availableSlots": [
+        { "date": "2026-05-03", "startTime": "09:00", "endTime": "12:00" },
+        { "date": "2026-05-04", "startTime": "10:00", "endTime": "14:00" }
+      ]
+    },
+    {
+      "listingId": "25563364",
+      "address": "12 Dairy Farm Lane",
+      "agentName": "Zacson Ong",
+      "agentCompany": "PROPNEX REALTY PTE. LTD.",
+      "availableSlots": [
+        { "date": "2026-05-03", "startTime": "09:00", "endTime": "12:00" },
+        { "date": "2026-05-03", "startTime": "14:00", "endTime": "17:00" }
+      ]
+    },
+    {
+      "listingId": "500052843",
+      "address": "27 Hillview Avenue",
+      "agentName": "Shawn Toh",
+      "agentCompany": "PROPNEX REALTY PTE. LTD.",
+      "availableSlots": [
+        { "date": "2026-05-03", "startTime": "09:00", "endTime": "11:00" },
+        { "date": "2026-05-04", "startTime": "10:00", "endTime": "13:00" }
+      ]
+    },
+    {
+      "listingId": "500086733",
+      "address": "383 Bukit Batok West Avenue 5",
+      "agentName": "Caleb Peh",
+      "agentCompany": "PROPNEX REALTY PTE. LTD.",
+      "availableSlots": [
+        { "date": "2026-05-03", "startTime": "09:00", "endTime": "12:00" }
+      ]
+    },
+    {
+      "listingId": "500105185",
+      "address": "124 Punggol Walk",
+      "agentName": "Bob Chan",
+      "agentCompany": "PROPNEX REALTY PTE. LTD.",
+      "availableSlots": [
+        { "date": "2026-05-03", "startTime": "14:00", "endTime": "18:00" },
+        { "date": "2026-05-04", "startTime": "10:00", "endTime": "14:00" }
+      ]
+    },
+    {
+      "listingId": "500114913",
+      "address": "415A Northshore Drive",
+      "agentName": "Eunice Koh",
+      "agentCompany": "PROPNEX REALTY PTE. LTD.",
+      "availableSlots": [
+        { "date": "2026-05-03", "startTime": "14:00", "endTime": "18:00" }
+      ]
+    },
+    {
+      "listingId": "500118667",
+      "address": "20 Anchorvale Lane",
+      "agentName": "Nicholas Feng",
+      "agentCompany": "PROPNEX REALTY PTE. LTD.",
+      "availableSlots": [
+        { "date": "2026-05-03", "startTime": "14:00", "endTime": "17:00" },
+        { "date": "2026-05-04", "startTime": "10:00", "endTime": "14:00" }
+      ]
+    },
+    {
+      "listingId": "500113070",
+      "address": "57 Compassvale Bow",
+      "agentName": "Jane Setiawan",
+      "agentCompany": "PROPNEX REALTY PTE. LTD.",
+      "availableSlots": [
+        { "date": "2026-05-03", "startTime": "15:00", "endTime": "18:00" },
+        { "date": "2026-05-04", "startTime": "10:00", "endTime": "12:00" }
+      ]
+    }
+  ],
+  "config": {
+    "useOneMap": true,
+    "viewingDurationMinutes": 30,
+    "bufferMinutes": 15,
+    "walkThresholdMinutes": 5
+  }
+}

@@ -1,0 +1,47 @@
+services:
+  app:
+    image: ${APP_IMAGE:-appointment-scheduler:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - VITE_SUPABASE_URL=${SUPABASE_URL}
+        - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+        - VITE_API_BASE=/api
+    container_name: appointment-scheduler
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3080:80"
+    environment:
+      - NODE_ENV=production
+      - PORT=8787
+      - SCRAPE_WORKER_CONCURRENCY=1
+      - SCRAPE_MAX_QUEUE=50
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ONEMAP_TOKEN=${ONEMAP_TOKEN:-}
+      - ONEMAP_EMAIL=${ONEMAP_EMAIL:-}
+      - ONEMAP_PASSWORD=${ONEMAP_PASSWORD:-}
+      # Supabase (data + auth) — required
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+    env_file:
+      - .env
+    volumes:
+      - app_data:/app/backend/dist/data
+      - app_playwright:/app/backend/.playwright
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  app_data:
+  app_playwright:

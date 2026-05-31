@@ -2,89 +2,43 @@ import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import {
-  addBuyerAvailability,
-  addCoordinationEvent,
-  addListingToTour,
-  addOpposingAgentAvailability,
-  createTour,
-  deleteBuyerAvailability,
-  deleteCoordinationEvent,
-  deleteListing,
-  deleteOpposingAgentAvailability,
-  generateAndSaveSchedule,
-  getTourById,
-  listBuyerAvailability,
-  listCoordinationEvents,
-  listOpposingAgentAvailability,
-  listTourSummaries,
-  listTours,
-  replaceBuyerAvailability,
-  replaceOpposingAgentAvailability,
-  updateBuyerAvailability,
-  updateCoordinationEvent,
-  updateListing,
-  updateListingStatus,
-  updateOpposingAgentAvailability,
-  updateTourBasics
-} from './lib/repositories/toursRepository';
+  scrapePropertyGuruSearch,
+  scrapePropertyGuruListingDetail,
+  isPropertyGuruListingDetailUrl,
+} from './lib/scrapers/propertyGuru';
 import {
-  buildCalendar,
-  buildCalendarDay,
-  buildExportStub,
-  buildInbox,
-  getExceptionById,
-  getItinerary,
-  getThread,
-  importPropertyLink,
-  listExceptions,
-  listThreadMessages,
-  listThreads,
-  markInboxItemRead,
-  parseSearchInput,
-  postThreadMessage,
-  recordItineraryShare,
-  resolveException,
-  searchCatalog,
-  updateThreadOwnership
-} from './lib/repositories/butlerRepository';
-import { scrapePropertyGuruSearch } from './lib/scrapers/propertyGuru';
-import { llmParseCriteria, llmFilterListings } from './lib/llm/criteriaParser';
+  enqueueScrapeTask,
+  ScrapeQueueFullError,
+} from './lib/scrapers/scrapeQueue';
+import { llmParsePgListings } from './lib/llm/pgListingParser';
+import { batchGetOrGeocode, cacheSize } from './lib/scheduling/geoCache';
 import {
   upsertPgListings,
-  getAllPgListings,
-  getPgListingsByIds,
-  findExistingListingIds,
 } from './lib/repositories/pgListingsRepository';
-import {
-  createClient,
-  deleteClient,
-  getClientById,
-  listClients,
-  updateClient
-} from './lib/repositories/clientsRepository';
-import {
-  getProfile,
-  getSettings,
-  updateProfile,
-  updateSettings
-} from './lib/repositories/settingsRepository';
-import {
-  validateCreateBuyerAvailabilityInput,
-  validateCreateCoordinationEventInput,
-  validateCreateListingInput,
-  validateCreateOpposingAgentAvailabilityInput,
-  validateCreateTourInput,
-  validateGenerateScheduleInput,
-  validateReplaceBuyerAvailabilityInput,
-  validateReplaceOpposingAgentAvailabilityInput,
-  validateUpdateBuyerAvailabilityInput,
-  validateUpdateCoordinationEventInput,
-  validateUpdateListingInput,
-  validateUpdateListingStatusInput,
-  validateUpdateOpposingAgentAvailabilityInput,
-  validateUpdateTourInput
-} from './lib/api/validation';
 import { methodNotAllowed, notFound, sendError } from './lib/http';
+import {
+  addConversationMessage,
+  addListingToTourWeb,
+  createPlan,
+  createTourForPlan,
+  generateRoute,
+  getConversationsByListing,
+  getPlanById,
+  getRouteByShareToken,
+  getSchedulingRun,
+  getTourDetail,
+  listConversationsByTour,
+  listListingsByTour,
+  listPlans,
+  listToursByPlan,
+  pgToBusinessListing,
+  removeListingFromTour,
+  shareRoute,
+  startSchedulingRun,
+} from './lib/repositories/plansRepository';
+import { seedTourConversations } from './lib/repositories/conversationsMock';
+import { runWithUser } from './lib/userContext';
+import { verifyToken, supabaseAdmin } from './lib/supabase';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -92,582 +46,520 @@ const port = Number(process.env.PORT || 8787);
 app.use(cors());
 app.use(express.json());
 
-function requireJsonObject(req: express.Request, res: express.Response) {
-  if (req.body && typeof req.body === 'object') return true;
-  sendError(res, 400, 'VALIDATION_FAILED', 'JSON object body is required', { body: 'JSON object body is required' });
-  return false;
+/**
+ * Express middleware: extract Bearer token, verify against Supabase Auth,
+ * then run the rest of the request inside `runWithUser` so repositories see
+ * the right userId + can spin up an RLS-respecting Supabase client.
+ */
+async function requireUser(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) {
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (!token) {
+    return sendError(res, 401, 'NO_TOKEN', 'Missing Authorization token');
+  }
+  const user = await verifyToken(token);
+  if (!user) {
+    return sendError(res, 401, 'INVALID_TOKEN', 'Token is invalid or expired');
+  }
+  runWithUser({ userId: user.id, jwt: token }, () => next());
 }
 
-function parseClientPayload(body: any) {
-  const fields: Record<string, string> = {};
-  if (!body || typeof body !== 'object') {
-    return { ok: false, fields: { body: 'JSON object body is required' } };
-  }
-  if (!String(body.name || '').trim()) fields.name = 'name is required';
-  if (Object.keys(fields).length) return { ok: false, fields };
-  return { ok: true, value: body };
-}
-
-function requireTour(req: express.Request, res: express.Response) {
-  const tour = getTourById(String(req.params.id || ''));
-  if (!tour) {
-    notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-    return undefined;
-  }
-  return tour;
-}
-
-function requireListing(req: express.Request, res: express.Response) {
-  const tour = requireTour(req, res);
-  if (!tour) return undefined;
-  const listing = tour.listings.find((item) => item.id === String(req.params.listingId || ''));
-  if (!listing) {
-    notFound(res, 'LISTING_NOT_FOUND', 'Listing not found');
-    return undefined;
-  }
-  return { tour, listing };
-}
+app.get('/', (_req, res) => {
+  res.json({ status: 'ok', service: 'appointment-scheduler-api', version: '1.0.0' });
+});
 
 app.get('/health', (_req, res) => {
   res.status(200).json({ ok: true });
 });
 
-app.get('/api/tours', (_req, res) => {
-  res.status(200).json({ tours: listTourSummaries() });
-});
-
-app.post('/api/tours', (req, res) => {
-  const validation = validateCreateTourInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Tour input is invalid', validation.fields);
+// Public share endpoint — uses the share token, not a user token. Mounted
+// BEFORE app.use('/api', requireUser) so it can be hit without auth.
+app.get('/api/share/routes/:shareToken', async (req, res) => {
+  const { data, error } = await supabaseAdmin.rpc('get_route_by_share_token', {
+    p_token: req.params.shareToken,
+  });
+  if (error) {
+    console.error('[share] rpc error:', error);
+    return sendError(res, 500, 'SHARE_LOOKUP_FAILED', error.message);
   }
-  return res.status(201).json({ tour: createTour(validation.value) });
+  if (!data) return notFound(res, 'SHARE_NOT_FOUND', 'Share link not found or expired');
+  return res.status(200).json({ route: data });
 });
 
-app.get('/api/tours/:id', (req, res) => {
-  const tour = getTourById(req.params.id);
-  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  return res.status(200).json({ tour });
+app.use('/api', requireUser);
+
+function requireJsonObject(req: express.Request, res: express.Response) {
+  if (req.body && typeof req.body === 'object') return true;
+  sendError(
+    res,
+    400,
+    'VALIDATION_FAILED',
+    'JSON object body is required',
+    { body: 'JSON object body is required' },
+  );
+  return false;
+}
+
+// ── Plans ──────────────────────────────────────────────────────────────────
+
+app.get('/api/plans', async (_req, res) => {
+  res.status(200).json({ plans: await listPlans() });
 });
 
-app.patch('/api/tours/:id', (req, res) => {
-  const validation = validateUpdateTourInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Tour input is invalid', validation.fields);
-  }
-  const tour = updateTourBasics(req.params.id, validation.value);
-  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  return res.status(200).json({ tour });
-});
-
-app.post('/api/tours/:id/generate-schedule', (req, res) => {
-  const validation = validateGenerateScheduleInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Schedule generation input is invalid', validation.fields);
-  }
-  const result = generateAndSaveSchedule(req.params.id, validation.value);
-  if (!result) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  return res.status(200).json(result);
-});
-
-app.post('/api/tours/:id/listings', (req, res) => {
-  const validation = validateCreateListingInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Listing input is invalid', validation.fields);
-  }
-  const result = addListingToTour(req.params.id, validation.value);
-  if (!result) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  return res.status(201).json(result);
-});
-
-app.patch('/api/tours/:id/listings/:listingId', (req, res) => {
-  const validation = validateUpdateListingInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Listing input is invalid', validation.fields);
-  }
-  const result = updateListing(req.params.id, req.params.listingId, validation.value);
-  if (!result) {
-    if (!requireListing(req, res)) return;
-  }
-  return res.status(200).json(result);
-});
-
-app.delete('/api/tours/:id/listings/:listingId', (req, res) => {
-  const result = deleteListing(req.params.id, req.params.listingId);
-  if (!result) {
-    if (!requireListing(req, res)) return;
-  }
-  return res.status(200).json(result);
-});
-
-app.get('/api/tours/:id/buyer-availability', (req, res) => {
-  const buyerAvailability = listBuyerAvailability(req.params.id);
-  if (!buyerAvailability) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  return res.status(200).json({ buyerAvailability });
-});
-
-app.post('/api/tours/:id/buyer-availability', (req, res) => {
-  const validation = validateCreateBuyerAvailabilityInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Buyer availability input is invalid', validation.fields);
-  }
-  const result = addBuyerAvailability(req.params.id, validation.value);
-  if (!result) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  return res.status(201).json(result);
-});
-
-app.put('/api/tours/:id/buyer-availability', (req, res) => {
-  const validation = validateReplaceBuyerAvailabilityInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Buyer availability replacement input is invalid', validation.fields);
-  }
-  const result = replaceBuyerAvailability(req.params.id, validation.value.availability);
-  if (!result) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  return res.status(200).json(result);
-});
-
-app.patch('/api/tours/:id/buyer-availability/:availabilityId', (req, res) => {
-  const validation = validateUpdateBuyerAvailabilityInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Buyer availability input is invalid', validation.fields);
-  }
-  const result = updateBuyerAvailability(req.params.id, req.params.availabilityId, validation.value);
-  if (!result) return notFound(res, 'BUYER_AVAILABILITY_NOT_FOUND', 'Buyer availability not found');
-  return res.status(200).json(result);
-});
-
-app.delete('/api/tours/:id/buyer-availability/:availabilityId', (req, res) => {
-  const result = deleteBuyerAvailability(req.params.id, req.params.availabilityId);
-  if (!result) return notFound(res, 'BUYER_AVAILABILITY_NOT_FOUND', 'Buyer availability not found');
-  return res.status(200).json(result);
-});
-
-app.get('/api/tours/:id/listings/:listingId/opposing-availability', (req, res) => {
-  const opposingAgentAvailability = listOpposingAgentAvailability(req.params.id, req.params.listingId);
-  if (!opposingAgentAvailability) {
-    if (!requireListing(req, res)) return;
-  }
-  return res.status(200).json({ opposingAgentAvailability });
-});
-
-app.post('/api/tours/:id/listings/:listingId/opposing-availability', (req, res) => {
-  const validation = validateCreateOpposingAgentAvailabilityInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Opposing-agent availability input is invalid', validation.fields);
-  }
-  const result = addOpposingAgentAvailability(req.params.id, req.params.listingId, validation.value);
-  if (!result) {
-    if (!requireListing(req, res)) return;
-  }
-  return res.status(201).json(result);
-});
-
-app.put('/api/tours/:id/listings/:listingId/opposing-availability', (req, res) => {
-  const validation = validateReplaceOpposingAgentAvailabilityInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Opposing-agent availability replacement input is invalid', validation.fields);
-  }
-  const result = replaceOpposingAgentAvailability(req.params.id, req.params.listingId, validation.value.availability);
-  if (!result) {
-    if (!requireListing(req, res)) return;
-  }
-  return res.status(200).json(result);
-});
-
-app.patch('/api/tours/:id/listings/:listingId/opposing-availability/:availabilityId', (req, res) => {
-  const validation = validateUpdateOpposingAgentAvailabilityInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Opposing-agent availability input is invalid', validation.fields);
-  }
-  const result = updateOpposingAgentAvailability(req.params.id, req.params.listingId, req.params.availabilityId, validation.value);
-  if (!result) return notFound(res, 'OPPOSING_AGENT_AVAILABILITY_NOT_FOUND', 'Opposing-agent availability not found');
-  return res.status(200).json(result);
-});
-
-app.delete('/api/tours/:id/listings/:listingId/opposing-availability/:availabilityId', (req, res) => {
-  const result = deleteOpposingAgentAvailability(req.params.id, req.params.listingId, req.params.availabilityId);
-  if (!result) return notFound(res, 'OPPOSING_AGENT_AVAILABILITY_NOT_FOUND', 'Opposing-agent availability not found');
-  return res.status(200).json(result);
-});
-
-app.patch('/api/tours/:id/listings/:listingId/status', (req, res) => {
-  const validation = validateUpdateListingStatusInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Listing status input is invalid', validation.fields);
-  }
-  const result = updateListingStatus(req.params.id, req.params.listingId, validation.value);
-  if (!result) {
-    if (!requireListing(req, res)) return;
-  }
-  return res.status(200).json(result);
-});
-
-app.get('/api/tours/:id/listings/:listingId/coordination-events', (req, res) => {
-  const coordinationEvents = listCoordinationEvents(req.params.id, req.params.listingId);
-  if (!coordinationEvents) {
-    if (!requireListing(req, res)) return;
-  }
-  return res.status(200).json({ coordinationEvents });
-});
-
-app.post('/api/tours/:id/listings/:listingId/coordination-events', (req, res) => {
-  const validation = validateCreateCoordinationEventInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Coordination event input is invalid', validation.fields);
-  }
-  const result = addCoordinationEvent(req.params.id, req.params.listingId, validation.value);
-  if (!result) {
-    if (!requireListing(req, res)) return;
-  }
-  return res.status(201).json(result);
-});
-
-app.patch('/api/tours/:id/listings/:listingId/coordination-events/:eventId', (req, res) => {
-  const validation = validateUpdateCoordinationEventInput(req.body);
-  if (!validation.ok || !validation.value) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Coordination event input is invalid', validation.fields);
-  }
-  const result = updateCoordinationEvent(req.params.id, req.params.listingId, req.params.eventId, validation.value);
-  if (!result) return notFound(res, 'COORDINATION_EVENT_NOT_FOUND', 'Coordination event not found');
-  return res.status(200).json(result);
-});
-
-app.delete('/api/tours/:id/listings/:listingId/coordination-events/:eventId', (req, res) => {
-  const result = deleteCoordinationEvent(req.params.id, req.params.listingId, req.params.eventId);
-  if (!result) return notFound(res, 'COORDINATION_EVENT_NOT_FOUND', 'Coordination event not found');
-  return res.status(200).json(result);
-});
-
-app.get('/api/clients', (_req, res) => {
-  res.status(200).json({ clients: listClients() });
-});
-
-app.post('/api/clients', (req, res) => {
-  const validation = parseClientPayload(req.body);
-  if (!validation.ok) return sendError(res, 400, 'VALIDATION_FAILED', 'Client input is invalid', validation.fields);
-  res.status(201).json({ client: createClient(validation.value) });
-});
-
-app.get('/api/clients/:clientId', (req, res) => {
-  const client = getClientById(req.params.clientId);
-  if (!client) return notFound(res, 'CLIENT_NOT_FOUND', 'Client not found');
-  res.status(200).json({ client });
-});
-
-app.patch('/api/clients/:clientId', (req, res) => {
+app.post('/api/plans', async (req, res) => {
   if (!requireJsonObject(req, res)) return;
-  const client = updateClient(req.params.clientId, req.body);
-  if (!client) return notFound(res, 'CLIENT_NOT_FOUND', 'Client not found');
-  res.status(200).json({ client });
-});
-
-app.delete('/api/clients/:clientId', (req, res) => {
-  const deleted = deleteClient(req.params.clientId);
-  if (!deleted) return notFound(res, 'CLIENT_NOT_FOUND', 'Client not found');
-  res.status(200).json({ deletedClientId: req.params.clientId });
-});
-
-app.post('/api/search/parse', (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-  const text = String(req.body.text || '').trim();
-  const source = req.body.source === 'voice' ? 'voice' : 'text';
-  res.status(200).json({ tags: parseSearchInput(text, source) });
-});
-
-app.post('/api/search/import-link', (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-  const url = String(req.body.url || '').trim();
-  res.status(200).json(importPropertyLink(url));
-});
-
-app.post('/api/search/results', (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-  const tags = Array.isArray(req.body.tags) ? req.body.tags : [];
-  const linkedListingIds = Array.isArray(req.body.linkedListingIds) ? req.body.linkedListingIds : [];
-  res.status(200).json({ results: searchCatalog(tags, linkedListingIds) });
-});
-
-// ── LLM-powered search parsing ──
-// POST /api/search/parse-llm — Use LLM to parse natural language into structured tags
-app.post('/api/search/parse-llm', async (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-  const text = String(req.body.text || '').trim();
-  if (!text) {
-    return res.status(200).json({ tags: [] });
+  const { title, clientName, clientWhatsapp, brief } = req.body;
+  if (!title || !clientName) {
+    return sendError(res, 400, 'VALIDATION_FAILED', 'title and clientName are required');
   }
-  const source = req.body.source === 'voice' ? 'voice' : 'text';
-  try {
-    const tags = await llmParseCriteria(text, source as 'text' | 'voice');
-    res.status(200).json({ tags });
-  } catch (err: any) {
-    console.error('[LLM parse] Error:', err.message);
-    // Fallback to regex-based parsing if LLM fails
-    res.status(200).json({ tags: parseSearchInput(text, source as 'voice' | 'text'), fallback: true });
-  }
+  const plan = await createPlan({ title, clientName, clientWhatsapp, brief: brief || '' });
+  return res.status(201).json({ plan });
 });
 
-// POST /api/search/filter-llm — Use LLM to semantically evaluate listings against criteria
-app.post('/api/search/filter-llm', async (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-  const listings = Array.isArray(req.body.listings) ? req.body.listings : [];
-  const criteria = Array.isArray(req.body.criteria) ? req.body.criteria : [];
-  if (!listings.length || !criteria.length) {
-    return res.status(200).json({
-      results: listings.map((l: any) => ({
-        listingId: l.id,
-        pass: true,
-        score: 100,
-        matches: [],
-        misses: [],
-      })),
-    });
-  }
-  try {
-    const results = await llmFilterListings(listings, criteria);
-    res.status(200).json({ results });
-  } catch (err: any) {
-    console.error('[LLM filter] Error:', err.message);
-    return sendError(res, 500, 'LLM_ERROR', 'LLM filtering failed: ' + err.message);
-  }
+app.get('/api/plans/:planId/tours', async (req, res) => {
+  const plan = await getPlanById(req.params.planId);
+  if (!plan) return notFound(res, 'PLAN_NOT_FOUND', 'Plan not found');
+  return res.status(200).json({ tours: await listToursByPlan(req.params.planId) });
 });
 
-// ── PropertyGuru scraping endpoints ──
-
-// POST /api/scrape/propertyguru — Scrape listing search results (with optional detail pages)
-app.post('/api/scrape/propertyguru', async (req, res) => {
+app.post('/api/plans/:planId/tours', async (req, res) => {
   if (!requireJsonObject(req, res)) return;
-
-  const url = String(req.body.url || '').trim();
-  if (!url) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'url is required', { url: 'url is required' });
-  }
-
-  // Wrap scraping in a timeout to prevent infinite hangs
-  const scrapeDetails = Boolean(req.body.scrapeDetails);
-  const SCRAPE_TIMEOUT_MS = scrapeDetails ? 600_000 : 120_000; // 10 min with details, 2 min without
-
-  try {
-    const scrapePromise = scrapePropertyGuruSearch({
-      url,
-      limit: Math.min(Number(req.body.limit) || 20, 100),
-      headless: Boolean(req.body.headless), // default headed for better CF bypass
-      scrapeDetails, // OFF by default — list page info is enough for initial display
-      scrapePhone: false, // phone scraping is a separate endpoint
-      debug: Boolean(req.body.debug),
-      timeoutMs: 90_000, // per-operation timeout (CF challenges can be slow)
-    });
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Scraping timed out after ${scrapeDetails ? 10 : 2} minutes. The website may be blocking automated access.`)), SCRAPE_TIMEOUT_MS)
+  const plan = await getPlanById(req.params.planId);
+  if (!plan) return notFound(res, 'PLAN_NOT_FOUND', 'Plan not found');
+  const { title, targetDate, timeWindow, command } = req.body;
+  if (!title || !targetDate || !timeWindow) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_FAILED',
+      'title, targetDate, and timeWindow are required',
     );
-
-    const result = await Promise.race([scrapePromise, timeoutPromise]);
-
-    // ── Persist scraped listings to JSON store ──
-    const listings = result.listings || [];
-    const dbResult = listings.length
-      ? upsertPgListings(listings as any[], url)
-      : { inserted: 0, updated: 0, total: 0 };
-
-    return res.status(200).json({
-      ...result,
-      db: dbResult, // { inserted, updated, total } — tells frontend how many were new vs cached
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to scrape PropertyGuru';
-    return sendError(res, 500, 'PROPERTYGURU_SCRAPE_FAILED', message);
   }
+  const tour = await createTourForPlan(req.params.planId, {
+    title,
+    targetDate,
+    timeWindow,
+    command: typeof command === 'string' ? command : '',
+  });
+  return res.status(201).json({ tour });
 });
 
-// GET /api/pg-listings — Get all stored PG listings from the database
-app.get('/api/pg-listings', (_req, res) => {
-  const stored = getAllPgListings();
-  res.status(200).json({ listings: stored, total: stored.length });
+// ── Listings ───────────────────────────────────────────────────────────────
+
+app.get('/api/tours/:tourId/listings', async (req, res) => {
+  return res.status(200).json({ listings: await listListingsByTour(req.params.tourId) });
 });
 
-// POST /api/pg-listings/check — Check which listing IDs already exist in the database
-// Body: { listingIds: string[] }
-// Returns: { existing: string[], newIds: string[] }
-app.post('/api/pg-listings/check', (req, res) => {
+app.delete('/api/tours/:tourId/web-listings/:listingId', async (req, res) => {
+  const ok = await removeListingFromTour(req.params.tourId, req.params.listingId);
+  if (!ok) return notFound(res, 'LISTING_NOT_FOUND', 'Listing not found');
+  return res.status(200).json({ deleted: true });
+});
+
+// ── Tour import from PropertyGuru ──────────────────────────────────────────
+
+app.post('/api/tours/:tourId/import', async (req, res) => {
   if (!requireJsonObject(req, res)) return;
-  const ids: string[] = Array.isArray(req.body.listingIds) ? req.body.listingIds : [];
-  const existingSet = findExistingListingIds(ids);
-  const existing = ids.filter((id) => existingSet.has(id));
-  const newIds = ids.filter((id) => !existingSet.has(id));
-  res.status(200).json({ existing, newIds, existingCount: existing.length, newCount: newIds.length });
-});
+  const tour = await getTourDetail(req.params.tourId);
+  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
 
-// POST /api/pg-listings/by-ids — Get stored listings by their IDs
-// Body: { listingIds: string[] }
-app.post('/api/pg-listings/by-ids', (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-  const ids: string[] = Array.isArray(req.body.listingIds) ? req.body.listingIds : [];
-  const found = getPgListingsByIds(ids);
-  res.status(200).json({ listings: found, total: found.length });
-});
+  const url = String(req.body.url || '').trim();
+  if (!url) return sendError(res, 400, 'VALIDATION_FAILED', 'url is required');
 
-// POST /api/scrape/propertyguru/phones — Scrape agent phone numbers for specific listing URLs
-// Body: { urls: string[] }  (array of listing detail page URLs)
-// Returns: { results: Array<{ url, agentName?, agentPhone?, error? }> }
-app.post('/api/scrape/propertyguru/phones', async (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-
-  const urls: string[] = Array.isArray(req.body.urls) ? req.body.urls : [];
-  if (!urls.length) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'urls array is required', { urls: 'urls is required and must be a non-empty array' });
-  }
-  if (urls.length > 20) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Too many URLs', { urls: 'Maximum 20 URLs per request' });
-  }
+  const limit = Math.min(Number(req.body.limit) || 20, 100);
+  const headless =
+    typeof req.body.headless === 'boolean'
+      ? req.body.headless
+      : false;
+  const t0 = Date.now();
+  console.log('[tour-import] ▶ start', { tourId: req.params.tourId, url, limit });
 
   try {
-    // We'll scrape the first URL's search-like page with phone enabled
-    // But since these are individual listing URLs, we use a different approach:
-    // Open a browser context and visit each URL to extract phone numbers
-    const result = await scrapePropertyGuruSearch({
-      url: urls[0], // use first URL as the "search" page — the scraper will handle detail pages
-      limit: urls.length,
-      headless: req.body.headless !== false,
-      scrapeDetails: true,
-      scrapePhone: true,
-      debug: Boolean(req.body.debug),
+    const TIMEOUT_MS = 300_000;
+    const isDetail = isPropertyGuruListingDetailUrl(url);
+    console.log('[tour-import] mode:', isDetail ? 'single-detail' : 'search-results');
+
+    let fresh: any[];
+    if (isDetail) {
+      const single = await enqueueScrapeTask('scrape:propertyguru:detail', async () => {
+        const detailPromise = scrapePropertyGuruListingDetail({
+          url,
+          headless,
+          scrapePhone: false,
+          debug: true,
+          timeoutMs: 240_000,
+        });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Detail scraping timed out after 5 minutes.')), TIMEOUT_MS),
+        );
+        return Promise.race([detailPromise, timeoutPromise]);
+      });
+      fresh = [single];
+    } else {
+      const result = await enqueueScrapeTask('scrape:propertyguru:search', async () => {
+        const scrapePromise = scrapePropertyGuruSearch({
+          url,
+          limit,
+          headless,
+          scrapeDetails: false,
+          scrapePhone: false,
+          debug: true,
+          timeoutMs: 240_000,
+        });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Scraping timed out after 5 minutes.')), TIMEOUT_MS),
+        );
+        return Promise.race([scrapePromise, timeoutPromise]);
+      });
+      fresh = result.listings || [];
+    }
+
+    const dbResult = fresh.length
+      ? upsertPgListings(fresh as any[], url)
+      : { inserted: 0, updated: 0, total: 0, versionsAppended: 0 };
+
+    let llmFields: any[] = [];
+    try {
+      llmFields = await llmParsePgListings(
+        fresh.map((item: any) => {
+          const rawText = String(item.rawText || '');
+          const description = String(item.detail?.description || '');
+          const combined = description
+            ? `${rawText}\n\n--- About this property ---\n${description}`
+            : rawText;
+          return {
+            listingId: String(item.listingId || item.url || ''),
+            rawText: combined,
+          };
+        }),
+      );
+      console.log('[tour-import] llm parsed', llmFields.length, 'rows');
+    } catch (error) {
+      console.warn(
+        '[tour-import] llm parsing failed, falling back to regex mapper:',
+        (error as Error).message,
+      );
+      llmFields = fresh.map(() => ({}));
+    }
+
+    const businessListings = fresh.map((item: any, idx: number) => {
+      const enriched = { ...item, _llm: llmFields[idx] || {} };
+      return pgToBusinessListing(enriched, url);
     });
 
-    // Map results back to the requested URLs
-    const phoneResults = urls.map(requestedUrl => {
-      const listing = result.listings.find(l => l.url === requestedUrl);
-      return {
-        url: requestedUrl,
-        agentName: listing?.detail?.agentName || listing?.agent || null,
-        agentPhone: listing?.detail?.agentPhone || null,
-        error: listing ? null : 'Listing not found in scrape results',
-      };
+    try {
+      const addresses = businessListings.map((listing) => listing.address).filter(Boolean);
+      const geoResults = await batchGetOrGeocode(addresses);
+      let geocoded = 0;
+      for (const listing of businessListings) {
+        const hit = geoResults.get(listing.address);
+        if (hit) {
+          listing.lat = hit.lat;
+          listing.lng = hit.lng;
+          geocoded++;
+        }
+      }
+      console.log(
+        '[tour-import] geocoded',
+        geocoded,
+        '/',
+        businessListings.length,
+        '(cache size now',
+        cacheSize(),
+        ')',
+      );
+    } catch (error) {
+      console.warn(
+        '[tour-import] geocode step failed, continuing without coords:',
+        (error as Error).message,
+      );
+    }
+
+    let merged = 0;
+    let added = 0;
+    for (const listing of businessListings) {
+      const existing = (await listListingsByTour(req.params.tourId)).find((item) => item.id === listing.id);
+      await addListingToTourWeb(req.params.tourId, listing);
+      if (existing) merged++;
+      else added++;
+    }
+
+    const finalListings = await listListingsByTour(req.params.tourId);
+
+    console.log('[tour-import] ✓ done', {
+      ms: Date.now() - t0,
+      scraped: fresh.length,
+      added,
+      merged,
+      pgArchive: dbResult,
+      tourTotal: finalListings.length,
     });
 
-    return res.status(200).json({ results: phoneResults });
+    return res.status(200).json({
+      listings: finalListings,
+      stats: { scraped: fresh.length, added, merged, pgArchive: dbResult },
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to scrape phone numbers';
-    return sendError(res, 500, 'PROPERTYGURU_PHONE_SCRAPE_FAILED', message);
+    if (error instanceof ScrapeQueueFullError) {
+      const stats = error.stats;
+      return sendError(res, 429, error.code, 'Scrape queue is busy. Please retry shortly.', {
+        running: String(stats.running),
+        queued: String(stats.queued),
+        concurrency: String(stats.concurrency),
+      });
+    }
+    const message = error instanceof Error ? error.message : 'Tour import failed';
+    console.error('[tour-import] ✗ error', { ms: Date.now() - t0, message });
+    return sendError(res, 500, 'TOUR_IMPORT_FAILED', message);
   }
 });
 
-app.get('/api/tours/:id/threads', (req, res) => {
-  const threads = listThreads(req.params.id);
-  if (!threads) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  res.status(200).json({ threads });
-});
-
-app.get('/api/tours/:id/threads/:threadId', (req, res) => {
-  const thread = getThread(req.params.id, req.params.threadId);
-  if (!thread) return notFound(res, 'THREAD_NOT_FOUND', 'Thread not found');
-  res.status(200).json({ thread });
-});
-
-app.get('/api/tours/:id/threads/:threadId/messages', (req, res) => {
-  const messages = listThreadMessages(req.params.id, req.params.threadId);
-  if (!messages) return notFound(res, 'THREAD_NOT_FOUND', 'Thread not found');
-  res.status(200).json({ messages });
-});
-
-app.post('/api/tours/:id/threads/:threadId/messages', (req, res) => {
+// ── Tour import from browser extension ────────────────────────────────────
+// MV3 content_script 已经在用户浏览器里把 PG 详情页 / 列表页 DOM 抽好了，
+// 这里只负责：归档 → LLM 抽字段 → geocode → 写 tour，与 /import 后半段一致。
+app.post('/api/tours/:tourId/import-from-extension', async (req, res) => {
   if (!requireJsonObject(req, res)) return;
-  const text = String(req.body.text || '').trim();
-  if (!text) return sendError(res, 400, 'VALIDATION_FAILED', 'Message input is invalid', { text: 'text is required' });
-  const messages = postThreadMessage(req.params.id, req.params.threadId, text);
-  if (!messages) return notFound(res, 'THREAD_NOT_FOUND', 'Thread not found');
-  res.status(201).json({ messages });
-});
+  const tour = await getTourDetail(req.params.tourId);
+  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
 
-app.patch('/api/tours/:id/threads/:threadId/ownership', (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-  const ownership = req.body.ownership;
-  if (ownership !== 'AI' && ownership !== 'HUMAN') {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Thread ownership is invalid', { ownership: 'ownership must be AI or HUMAN' });
+  const sourceUrl = String(req.body.url || '').trim();
+  const incoming = Array.isArray(req.body.listings) ? req.body.listings : [];
+  if (!incoming.length) {
+    return sendError(res, 400, 'VALIDATION_FAILED', 'listings (non-empty array) is required');
   }
-  const thread = updateThreadOwnership(req.params.id, req.params.threadId, ownership);
-  if (!thread) return notFound(res, 'THREAD_NOT_FOUND', 'Thread not found');
-  res.status(200).json({ thread });
-});
 
-app.get('/api/tours/:id/exceptions', (req, res) => {
-  const exceptions = listExceptions(req.params.id);
-  if (!exceptions) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  res.status(200).json({ exceptions });
-});
+  const t0 = Date.now();
+  console.log('[ext-import] ▶ start', {
+    tourId: req.params.tourId,
+    source: req.body.source || 'pg-detail',
+    sourceUrl,
+    count: incoming.length,
+  });
 
-app.get('/api/tours/:id/exceptions/:exceptionId', (req, res) => {
-  const exception = getExceptionById(req.params.id, req.params.exceptionId);
-  if (!exception) return notFound(res, 'EXCEPTION_NOT_FOUND', 'Exception not found');
-  res.status(200).json({ exception });
-});
+  try {
+    const dbResult = upsertPgListings(incoming as any[], sourceUrl);
 
-app.post('/api/tours/:id/exceptions/:exceptionId/resolve', (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-  const action = req.body.action;
-  if (!['SQUEEZE_IN', 'REPROPOSE', 'DROP_LISTING'].includes(action)) {
-    return sendError(res, 400, 'VALIDATION_FAILED', 'Exception resolution input is invalid', { action: 'action must be SQUEEZE_IN, REPROPOSE, or DROP_LISTING' });
+    let llmFields: any[] = [];
+    try {
+      llmFields = await llmParsePgListings(
+        incoming.map((item: any) => {
+          const rawText = String(item.rawText || '');
+          const description = String(item.detail?.description || '');
+          const combined = description
+            ? `${rawText}\n\n--- About this property ---\n${description}`
+            : rawText;
+          return {
+            listingId: String(item.listingId || item.url || ''),
+            rawText: combined,
+          };
+        }),
+      );
+      console.log('[ext-import] llm parsed', llmFields.length, 'rows');
+    } catch (error) {
+      console.warn(
+        '[ext-import] llm parsing failed, continuing with empty fields:',
+        (error as Error).message,
+      );
+      llmFields = incoming.map(() => ({}));
+    }
+
+    const businessListings = incoming.map((item: any, idx: number) => {
+      const enriched = { ...item, _llm: llmFields[idx] || {} };
+      return pgToBusinessListing(enriched, sourceUrl);
+    });
+
+    try {
+      const addresses = businessListings.map((listing) => listing.address).filter(Boolean);
+      const geoResults = await batchGetOrGeocode(addresses);
+      let geocoded = 0;
+      for (const listing of businessListings) {
+        const hit = geoResults.get(listing.address);
+        if (hit) {
+          listing.lat = hit.lat;
+          listing.lng = hit.lng;
+          geocoded++;
+        }
+      }
+      console.log(
+        '[ext-import] geocoded',
+        geocoded,
+        '/',
+        businessListings.length,
+        '(cache size now',
+        cacheSize(),
+        ')',
+      );
+    } catch (error) {
+      console.warn(
+        '[ext-import] geocode step failed, continuing without coords:',
+        (error as Error).message,
+      );
+    }
+
+    let merged = 0;
+    let added = 0;
+    for (const listing of businessListings) {
+      const existing = (await listListingsByTour(req.params.tourId)).find((item) => item.id === listing.id);
+      await addListingToTourWeb(req.params.tourId, listing);
+      if (existing) merged++;
+      else added++;
+    }
+
+    const finalListings = await listListingsByTour(req.params.tourId);
+
+    console.log('[ext-import] ✓ done', {
+      ms: Date.now() - t0,
+      received: incoming.length,
+      added,
+      merged,
+      pgArchive: dbResult,
+      tourTotal: finalListings.length,
+    });
+
+    return res.status(200).json({
+      listings: finalListings,
+      stats: { scraped: incoming.length, added, merged, pgArchive: dbResult },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Extension import failed';
+    console.error('[ext-import] ✗ error', { ms: Date.now() - t0, message });
+    return sendError(res, 500, 'EXT_IMPORT_FAILED', message);
   }
-  const result = resolveException(req.params.id, req.params.exceptionId, action);
-  if (!result) return notFound(res, 'EXCEPTION_NOT_FOUND', 'Exception not found');
-  res.status(200).json(result);
 });
 
-app.get('/api/calendar', (req, res) => {
-  const month = String(req.query.month || new Date().toISOString().slice(0, 7));
-  res.status(200).json(buildCalendar(month));
+// ── Conversations / scheduling workflow ───────────────────────────────────
+
+app.post('/api/tours/:tourId/conversations/seed', async (req, res) => {
+  const tour = await getTourDetail(req.params.tourId);
+  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
+  const agentName = typeof req.body?.agentName === 'string' ? req.body.agentName : undefined;
+  const result = await seedTourConversations(req.params.tourId, agentName);
+  console.log('[seed] tour', req.params.tourId, result);
+  return res.status(200).json(result);
 });
 
-app.get('/api/calendar/day', (req, res) => {
-  const date = String(req.query.date || new Date().toISOString().slice(0, 10));
-  res.status(200).json(buildCalendarDay(date));
+app.post('/api/tours/:tourId/scheduling-runs', async (req, res) => {
+  const tour = await getTourDetail(req.params.tourId);
+  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
+  const run = await startSchedulingRun(req.params.tourId);
+  return res.status(201).json({ run });
 });
 
-app.get('/api/tours/:id/itinerary', (req, res) => {
-  const itinerary = getItinerary(req.params.id);
-  if (!itinerary) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  res.status(200).json({ itinerary });
+app.get('/api/scheduling-runs/:runId', async (req, res) => {
+  const run = await getSchedulingRun(req.params.runId);
+  if (!run) return notFound(res, 'RUN_NOT_FOUND', 'Scheduling run not found');
+  return res.status(200).json({ run });
 });
 
-app.post('/api/tours/:id/itinerary/share', (req, res) => {
-  const tour = requireTour(req, res);
-  if (!tour) return;
-  const share = recordItineraryShare(tour.id);
-  res.status(200).json({ share });
+app.get('/api/tours/:tourId/conversations', async (req, res) => {
+  const messages = await listConversationsByTour(req.params.tourId);
+  const byListing: Record<string, any[]> = {};
+  for (const msg of messages) {
+    if (!byListing[msg.listingId]) byListing[msg.listingId] = [];
+    byListing[msg.listingId].push(msg);
+  }
+  const listings = await listListingsByTour(req.params.tourId);
+  const conversations = Object.entries(byListing).map(([listingId, msgs]) => {
+    if (listingId === '__buyer__') {
+      return {
+        id: `conv-${listingId}`,
+        listingId,
+        coAgentName: 'Buyer',
+        listingTitle: 'Buyer availability',
+        messages: msgs,
+        lastMessage: msgs[msgs.length - 1],
+      };
+    }
+    const listing = listings.find((item) => item.id === listingId);
+    return {
+      id: `conv-${listingId}`,
+      listingId,
+      coAgentName: listing?.coAgent.name || 'Unknown',
+      listingTitle: listing?.title || 'Unknown Listing',
+      messages: msgs,
+      lastMessage: msgs[msgs.length - 1],
+    };
+  });
+  return res.status(200).json({ conversations });
 });
 
-app.post('/api/tours/:id/itinerary/export', (req, res) => {
-  const tour = requireTour(req, res);
-  if (!tour) return;
-  res.status(200).json({ export: buildExportStub(tour.id) });
+app.get('/api/conversations/:conversationId/messages', async (req, res) => {
+  const listingId = req.params.conversationId.replace('conv-', '');
+  const plans = await listPlans();
+  for (const plan of plans) {
+    const tours = await listToursByPlan(plan.id);
+    for (const tour of tours) {
+      const msgs = await getConversationsByListing(tour.id, listingId);
+      if (msgs.length > 0) {
+        return res.status(200).json({ messages: msgs });
+      }
+    }
+  }
+  return res.status(200).json({ messages: [] });
 });
 
-app.get('/api/inbox', (_req, res) => {
-  res.status(200).json({ items: buildInbox() });
-});
-
-app.patch('/api/inbox/:itemId/read', (req, res) => {
-  const item = markInboxItemRead(req.params.itemId);
-  if (!item) return notFound(res, 'INBOX_ITEM_NOT_FOUND', 'Inbox item not found');
-  res.status(200).json({ item });
-});
-
-app.get('/api/me', (_req, res) => {
-  res.status(200).json({ profile: getProfile() });
-});
-
-app.patch('/api/me', (req, res) => {
+app.post('/api/conversations/:conversationId/messages', async (req, res) => {
   if (!requireJsonObject(req, res)) return;
-  res.status(200).json({ profile: updateProfile(req.body) });
+  const listingId = req.params.conversationId.replace('conv-', '');
+  const { body: msgBody, sender, senderName } = req.body;
+  if (!msgBody) {
+    return sendError(res, 400, 'VALIDATION_FAILED', 'body is required');
+  }
+
+  const plans = await listPlans();
+  for (const plan of plans) {
+    const tours = await listToursByPlan(plan.id);
+    for (const tour of tours) {
+      const listings = await listListingsByTour(tour.id);
+      const hasExistingThread = (await getConversationsByListing(tour.id, listingId)).length > 0;
+      const isBuyerThread = listingId === '__buyer__' && hasExistingThread;
+      const belongsToListing = listings.some((item) => item.id === listingId);
+      if (!isBuyerThread && !belongsToListing) continue;
+
+      const msg = await addConversationMessage(tour.id, {
+        id: `m-${Date.now()}`,
+        listingId,
+        sender: sender || 'agent',
+        senderName: senderName || 'Dave Shen',
+        body: msgBody,
+        timestamp: new Date().toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }),
+      });
+      return res.status(201).json({ message: msg });
+    }
+  }
+
+  return notFound(res, 'CONVERSATION_NOT_FOUND', 'Conversation not found');
 });
 
-app.get('/api/settings', (_req, res) => {
-  res.status(200).json({ settings: getSettings() });
+// ── Route generation / sharing ────────────────────────────────────────────
+
+app.post('/api/tours/:tourId/routes/generate', async (req, res) => {
+  const tour = await getTourDetail(req.params.tourId);
+  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
+  const route = await generateRoute(req.params.tourId);
+  return res.status(201).json({ route });
 });
 
-app.patch('/api/settings', (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-  res.status(200).json({ settings: updateSettings(req.body) });
+app.post('/api/routes/:routeId/share', async (req, res) => {
+  try {
+    const result = await shareRoute(req.params.routeId);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    return notFound(res, 'ROUTE_NOT_FOUND', error.message);
+  }
 });
+
+// This public share endpoint is registered BEFORE app.use('/api', requireUser)
+// at the top of this file. Keep it there so customer share links don't need
+// a user token.
 
 app.use((req, res) => methodNotAllowed(res, req.method, []));
 

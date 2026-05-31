@@ -1285,3 +1285,46 @@ export async function scrapePropertyGuruSearch(input: ScrapePropertyGuruInput) {
     await context.close();
   }
 }
+
+/* ─── Detail-page helpers (stub re-introduced 2026-06-01 after recovery) ───
+ * Reason: server.ts (recovered from local history) imports
+ *   - isPropertyGuruListingDetailUrl
+ *   - scrapePropertyGuruListingDetail
+ * These were added during the May 31 "scraper concurrency upgrade" but the
+ * upgrade itself was lost (never committed, not in IDE local history).
+ * Below is a safe minimum:
+ *   - isPropertyGuruListingDetailUrl: real heuristic match on PG listing URLs
+ *   - scrapePropertyGuruListingDetail: throws "not implemented" so the route
+ *     fails clearly instead of silently. Reimplement when needed.
+ */
+
+const PG_LISTING_DETAIL_PATTERNS: RegExp[] = [
+  // e.g. https://www.propertyguru.com.sg/listing/24123456
+  /propertyguru\.com\.sg\/listing\/\d+/i,
+  // e.g. https://www.propertyguru.com.sg/property-for-sale/<slug>-<id>
+  /propertyguru\.com\.sg\/property-for-(?:sale|rent)\/[^?#]+-\d+/i,
+  // e.g. https://www.propertyguru.com.sg/p/<slug>-<id>
+  /propertyguru\.com\.sg\/p\/[^?#]+-\d+/i,
+];
+
+export function isPropertyGuruListingDetailUrl(url: string): boolean {
+  if (typeof url !== 'string' || !url.trim()) return false;
+  return PG_LISTING_DETAIL_PATTERNS.some((re) => re.test(url));
+}
+
+export interface ScrapePropertyGuruListingDetailInput {
+  url: string;
+  headless?: boolean;
+  scrapePhone?: boolean;
+  debug?: boolean;
+  timeoutMs?: number;
+}
+
+export async function scrapePropertyGuruListingDetail(
+  _input: ScrapePropertyGuruListingDetailInput,
+): Promise<PropertyGuruListing> {
+  throw new Error(
+    'scrapePropertyGuruListingDetail is not implemented yet (stub restored 2026-06-01). ' +
+      'Use scrapePropertyGuruSearch for search-results URLs, or reimplement single-detail scraping.',
+  );
+}

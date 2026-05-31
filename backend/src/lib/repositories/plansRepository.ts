@@ -1,0 +1,1192 @@
+/**
+ * Plans Repository — Supabase-backed.
+ *
+ * Source of truth: PostgreSQL via Supabase. All reads/writes go through a
+ * per-request client whose JWT is the user's; Postgres RLS enforces
+ * per-user isolation.
+ *
+ * The PG → business Listing mapper (`pgToBusinessListing`) and PG rawText
+ * parsers stay pure functions at the bottom of this file — they don't touch
+ * the database.
+ */
+
+import { getCurrentUserId, getCurrentJwt, runWithUser } from '../userContext';
+import { supabaseForUser, supabaseAdmin } from '../supabase';
+import type { SupabaseClient } from '@supabase/supabase-js';
+
+/* ─── Domain Types (matching frontend domain.ts) ─── */
+
+export type ListingStatus =
+  | 'imported'
+  | 'contacting'
+  | 'confirmed'
+  | 'needs-attention'
+  | 'not-fitting';
+
+export type MessageSender = 'ai' | 'agent' | 'co-agent' | 'system';
+
+export interface ViewingPlan {
+  id: string;
+  title: string;
+  clientName: string;
+  clientWhatsapp?: string;
+  brief: string;
+}
+
+export interface ViewingTour {
+  id: string;
+  planId: string;
+  title: string;
+  targetDate: string;
+  timeWindow: string;
+  command: string;
+}
+
+export interface CoAgent {
+  name: string;
+  phone: string;
+  agency: string;
+}
+
+export interface Listing {
+  id: string;
+  title: string;
+  address: string;
+  area: string;
+  condo: string;
+  price: string;
+  beds: number;
+  baths: number;
+  sqft: number;
+  psf: string;
+  imageUrl: string;
+  status: ListingStatus;
+  statusLabel: string;
+  suggestedTime?: string;
+  unitNo: string;
+  coAgent: CoAgent;
+  googleMapsUrl: string;
+  propertyGuruUrl: string;
+  summary: string;
+  attentionReason?: string;
+  /** Mock co-agent availability (filled by /conversations/seed). */
+  availability?: SellerTimeWindow[];
+  /** Geocoded coordinates. */
+  lat?: number;
+  lng?: number;
+  /** Co-agent reachability. */
+  agentReachable?: boolean;
+}
+
+export interface SellerTimeWindow {
+  date: string;
+  startTime: string;
+  endTime: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  listingId: string;
+  sender: MessageSender;
+  senderName: string;
+  body: string;
+  timestamp: string;
+}
+
+export interface RouteStop {
+  id: string;
+  listingId: string;
+  time: string;
+  title: string;
+  address: string;
+  area: string;
+  condo: string;
+  unitNo: string;
+  coAgentName: string;
+  coAgentPhone: string;
+  googleMapsUrl: string;
+  notes: string;
+}
+
+export interface ClientRouteStop {
+  id: string;
+  time: string;
+  title: string;
+  address: string;
+  area: string;
+  condo: string;
+  googleMapsUrl: string;
+}
+
+export interface AgentRoute {
+  id: string;
+  planId: string;
+  tourId: string;
+  title: string;
+  date: string;
+  stops: RouteStop[];
+}
+
+export interface ClientRoute {
+  shareToken: string;
+  title: string;
+  date: string;
+  stops: ClientRouteStop[];
+  privacyNotice: string;
+}
+
+export interface SchedulingRun {
+  id: string;
+  tourId: string;
+  status: 'running' | 'completed' | 'failed';
+  progress: number;
+  startedAt: string;
+  completedAt?: string;
+  result?: {
+    scheduledCount: number;
+    attentionCount: number;
+  };
+}
+
+export interface AttentionItem {
+  id: string;
+  tourId: string;
+  listingId: string;
+  reason: string;
+  resolved: boolean;
+  resolution?: string;
+}
+
+/* ─── Internal helpers ───────────────────────────────────────────────────── */
+
+function db(): SupabaseClient {
+  // Per-request, RLS-aware Supabase client. Caller must be inside runWithUser.
+  return supabaseForUser(getCurrentJwt());
+}
+
+const BUYER_LISTING_KEY = '__buyer__';
+
+const mapsUrl = (address: string) =>
+  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+
+/* ─── Row → Domain mappers ───────────────────────────────────────────────── */
+
+interface PlanRow {
+  id: string;
+  user_id: string;
+  title: string;
+  client_name: string;
+  client_whatsapp: string | null;
+  brief: string;
+}
+
+interface TourRow {
+  id: string;
+  plan_id: string;
+  user_id: string;
+  title: string;
+  target_date: string;
+  time_window: string;
+  command: string;
+}
+
+interface ListingRow {
+  id: string;
+  tour_id: string;
+  user_id: string;
+  pg_listing_id: string | null;
+  title: string;
+  address: string;
+  area: string;
+  condo: string;
+  price: string;
+  beds: number;
+  baths: number;
+  sqft: number;
+  psf: string;
+  image_url: string;
+  status: ListingStatus;
+  status_label: string;
+  suggested_time: string | null;
+  unit_no: string;
+  co_agent_name: string;
+  co_agent_phone: string;
+  co_agent_agency: string;
+  google_maps_url: string;
+  property_guru_url: string;
+  summary: string;
+  attention_reason: string | null;
+  availability: SellerTimeWindow[] | null;
+  lat: number | null;
+  lng: number | null;
+  agent_reachable: boolean | null;
+}
+
+interface ConversationRow {
+  id: string;
+  tour_id: string;
+  user_id: string;
+  listing_key: string;
+  sender: MessageSender;
+  sender_name: string;
+  body: string;
+  ts_label: string;
+}
+
+interface RouteRow {
+  id: string;
+  tour_id: string;
+  user_id: string;
+  title: string;
+  date: string;
+  stops: RouteStop[];
+}
+
+interface SchedulingRunRow {
+  id: string;
+  tour_id: string;
+  user_id: string;
+  status: 'running' | 'completed' | 'failed';
+  progress: number;
+  scheduled_count: number;
+  attention_count: number;
+  started_at: string;
+  completed_at: string | null;
+}
+
+interface AttentionItemRow {
+  id: string;
+  tour_id: string;
+  user_id: string;
+  listing_id: string | null;
+  reason: string;
+  resolved: boolean;
+  resolution: string | null;
+}
+
+function rowToPlan(r: PlanRow): ViewingPlan {
+  return {
+    id: r.id,
+    title: r.title,
+    clientName: r.client_name,
+    clientWhatsapp: r.client_whatsapp ?? undefined,
+    brief: r.brief,
+  };
+}
+
+function rowToTour(r: TourRow): ViewingTour {
+  return {
+    id: r.id,
+    planId: r.plan_id,
+    title: r.title,
+    targetDate: r.target_date,
+    timeWindow: r.time_window,
+    command: r.command,
+  };
+}
+
+function rowToListing(r: ListingRow): Listing {
+  return {
+    id: r.id,
+    title: r.title,
+    address: r.address,
+    area: r.area,
+    condo: r.condo,
+    price: r.price,
+    beds: r.beds,
+    baths: r.baths,
+    sqft: r.sqft,
+    psf: r.psf,
+    imageUrl: r.image_url,
+    status: r.status,
+    statusLabel: r.status_label,
+    suggestedTime: r.suggested_time ?? undefined,
+    unitNo: r.unit_no,
+    coAgent: { name: r.co_agent_name, phone: r.co_agent_phone, agency: r.co_agent_agency },
+    googleMapsUrl: r.google_maps_url,
+    propertyGuruUrl: r.property_guru_url,
+    summary: r.summary,
+    attentionReason: r.attention_reason ?? undefined,
+    availability: r.availability ?? [],
+    lat: r.lat ?? undefined,
+    lng: r.lng ?? undefined,
+    agentReachable: r.agent_reachable ?? undefined,
+  };
+}
+
+function listingToRow(l: Listing, tourId: string, userId: string): Omit<ListingRow, 'id'> & { id?: string } {
+  return {
+    id: isUuid(l.id) ? l.id : undefined,
+    tour_id: tourId,
+    user_id: userId,
+    pg_listing_id: extractPgListingId(l.id, l.propertyGuruUrl),
+    title: l.title,
+    address: l.address,
+    area: l.area,
+    condo: l.condo,
+    price: l.price,
+    beds: l.beds,
+    baths: l.baths,
+    sqft: l.sqft,
+    psf: l.psf,
+    image_url: l.imageUrl,
+    status: l.status,
+    status_label: l.statusLabel,
+    suggested_time: l.suggestedTime ?? null,
+    unit_no: l.unitNo,
+    co_agent_name: l.coAgent.name,
+    co_agent_phone: l.coAgent.phone,
+    co_agent_agency: l.coAgent.agency,
+    google_maps_url: l.googleMapsUrl,
+    property_guru_url: l.propertyGuruUrl,
+    summary: l.summary,
+    attention_reason: l.attentionReason ?? null,
+    availability: l.availability ?? [],
+    lat: l.lat ?? null,
+    lng: l.lng ?? null,
+    agent_reachable: l.agentReachable ?? null,
+  };
+}
+
+function rowToConversation(r: ConversationRow): ConversationMessage {
+  return {
+    id: r.id,
+    listingId: r.listing_key,
+    sender: r.sender,
+    senderName: r.sender_name,
+    body: r.body,
+    timestamp: r.ts_label,
+  };
+}
+
+function rowToRoute(r: RouteRow, planId: string): AgentRoute {
+  return {
+    id: r.id,
+    planId,
+    tourId: r.tour_id,
+    title: r.title,
+    date: r.date,
+    stops: r.stops || [],
+  };
+}
+
+function rowToSchedulingRun(r: SchedulingRunRow): SchedulingRun {
+  return {
+    id: r.id,
+    tourId: r.tour_id,
+    status: r.status,
+    progress: r.progress,
+    startedAt: r.started_at,
+    completedAt: r.completed_at ?? undefined,
+    result:
+      r.status === 'completed'
+        ? { scheduledCount: r.scheduled_count, attentionCount: r.attention_count }
+        : undefined,
+  };
+}
+
+function rowToAttentionItem(r: AttentionItemRow): AttentionItem {
+  return {
+    id: r.id,
+    tourId: r.tour_id,
+    listingId: r.listing_id ?? '',
+    reason: r.reason,
+    resolved: r.resolved,
+    resolution: r.resolution ?? undefined,
+  };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(s: string | undefined | null): boolean {
+  return !!s && UUID_RE.test(s);
+}
+
+/** Extract the PropertyGuru numeric listingId from a synthetic id like "pg-60244724" or from a URL. */
+function extractPgListingId(syntheticId: string, url: string): string | null {
+  if (syntheticId?.startsWith('pg-')) return syntheticId.slice(3);
+  const m = /-(\d{6,})(?:[/?#]|$)/.exec(url || '');
+  return m ? m[1] : null;
+}
+
+/* ─── Plans CRUD ─────────────────────────────────────────────────────────── */
+
+export async function listPlans(): Promise<ViewingPlan[]> {
+  const { data, error } = await db()
+    .from('plans')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data as PlanRow[]).map(rowToPlan);
+}
+
+export async function getPlanById(planId: string): Promise<ViewingPlan | undefined> {
+  if (!isUuid(planId)) return undefined;
+  const { data, error } = await db()
+    .from('plans')
+    .select('*')
+    .eq('id', planId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToPlan(data as PlanRow) : undefined;
+}
+
+export async function createPlan(input: Omit<ViewingPlan, 'id'>): Promise<ViewingPlan> {
+  const userId = getCurrentUserId();
+  const { data, error } = await db()
+    .from('plans')
+    .insert({
+      user_id: userId,
+      title: input.title,
+      client_name: input.clientName,
+      client_whatsapp: input.clientWhatsapp ?? null,
+      brief: input.brief ?? '',
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return rowToPlan(data as PlanRow);
+}
+
+/* ─── Tours CRUD ─────────────────────────────────────────────────────────── */
+
+export async function listToursByPlan(planId: string): Promise<ViewingTour[]> {
+  if (!isUuid(planId)) return [];
+  const { data, error } = await db()
+    .from('tours')
+    .select('*')
+    .eq('plan_id', planId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data as TourRow[]).map(rowToTour);
+}
+
+export async function getTourDetail(tourId: string): Promise<ViewingTour | undefined> {
+  if (!isUuid(tourId)) return undefined;
+  const { data, error } = await db()
+    .from('tours')
+    .select('*')
+    .eq('id', tourId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToTour(data as TourRow) : undefined;
+}
+
+export async function createTourForPlan(
+  planId: string,
+  input: Omit<ViewingTour, 'id' | 'planId'>,
+): Promise<ViewingTour> {
+  const userId = getCurrentUserId();
+  const { data, error } = await db()
+    .from('tours')
+    .insert({
+      plan_id: planId,
+      user_id: userId,
+      title: input.title,
+      target_date: input.targetDate,
+      time_window: input.timeWindow,
+      command: input.command ?? '',
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return rowToTour(data as TourRow);
+}
+
+/* ─── Listings CRUD (under Tour) ─────────────────────────────────────────── */
+
+export async function listListingsByTour(tourId: string): Promise<Listing[]> {
+  if (!isUuid(tourId)) return [];
+  const { data, error } = await db()
+    .from('listings')
+    .select('*')
+    .eq('tour_id', tourId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data as ListingRow[]).map(rowToListing);
+}
+
+/**
+ * Idempotent upsert of a PG-derived listing into the given tour.
+ *
+ * Match key: `pg_listing_id` (when the incoming Listing has a "pg-XXXXXX" id).
+ * - If a row already exists in this tour with that pg_listing_id → MERGE
+ *   (PG-derived fields overwrite, business fields kept).
+ * - Else → INSERT a fresh row (Postgres assigns a uuid).
+ *
+ * Returns the row as it now exists in the DB.
+ */
+export async function addListingToTourWeb(tourId: string, listing: Listing): Promise<Listing> {
+  const userId = getCurrentUserId();
+  const pgId = extractPgListingId(listing.id, listing.propertyGuruUrl);
+
+  // Try to find an existing row in this tour with the same pg_listing_id.
+  if (pgId) {
+    const { data: existing, error: findErr } = await db()
+      .from('listings')
+      .select('*')
+      .eq('tour_id', tourId)
+      .eq('pg_listing_id', pgId)
+      .maybeSingle();
+    if (findErr) throw findErr;
+
+    if (existing) {
+      const old = rowToListing(existing as ListingRow);
+      const merged: Listing = {
+        ...old,
+        // PG-derived fields → overwrite from new
+        title: listing.title,
+        address: listing.address,
+        area: listing.area,
+        condo: listing.condo,
+        price: listing.price,
+        beds: listing.beds,
+        baths: listing.baths,
+        sqft: listing.sqft,
+        psf: listing.psf,
+        imageUrl: listing.imageUrl || old.imageUrl,
+        googleMapsUrl: listing.googleMapsUrl || old.googleMapsUrl,
+        propertyGuruUrl: listing.propertyGuruUrl || old.propertyGuruUrl,
+        lat: listing.lat != null && listing.lat !== 0 ? listing.lat : old.lat,
+        lng: listing.lng != null && listing.lng !== 0 ? listing.lng : old.lng,
+        coAgent:
+          listing.coAgent && listing.coAgent.name && listing.coAgent.name !== 'Unknown'
+            ? listing.coAgent
+            : old.coAgent,
+        id: old.id, // keep DB uuid
+      };
+
+      const { data: updated, error: upErr } = await db()
+        .from('listings')
+        .update(listingToRow(merged, tourId, userId))
+        .eq('id', old.id)
+        .select()
+        .single();
+      if (upErr) throw upErr;
+      return rowToListing(updated as ListingRow);
+    }
+  }
+
+  // No existing row — insert fresh. Don't pass synthetic "pg-XXX" as the id;
+  // let Postgres assign a uuid.
+  const row = listingToRow(listing, tourId, userId);
+  delete row.id;
+  const { data, error } = await db().from('listings').insert(row).select().single();
+  if (error) throw error;
+  return rowToListing(data as ListingRow);
+}
+
+export async function updateListingInTour(
+  tourId: string,
+  listingId: string,
+  updates: Partial<Listing>,
+): Promise<Listing | undefined> {
+  if (!isUuid(listingId)) return undefined;
+  const patch: Record<string, unknown> = {};
+  if (updates.title !== undefined) patch.title = updates.title;
+  if (updates.status !== undefined) patch.status = updates.status;
+  if (updates.statusLabel !== undefined) patch.status_label = updates.statusLabel;
+  if (updates.suggestedTime !== undefined) patch.suggested_time = updates.suggestedTime;
+  if (updates.attentionReason !== undefined) patch.attention_reason = updates.attentionReason;
+  if (updates.availability !== undefined) patch.availability = updates.availability;
+  if (updates.agentReachable !== undefined) patch.agent_reachable = updates.agentReachable;
+  if (updates.coAgent !== undefined) {
+    patch.co_agent_name = updates.coAgent.name;
+    patch.co_agent_phone = updates.coAgent.phone;
+    patch.co_agent_agency = updates.coAgent.agency;
+  }
+
+  const { data, error } = await db()
+    .from('listings')
+    .update(patch)
+    .eq('id', listingId)
+    .eq('tour_id', tourId)
+    .select()
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToListing(data as ListingRow) : undefined;
+}
+
+export async function removeListingFromTour(tourId: string, listingId: string): Promise<boolean> {
+  if (!isUuid(listingId)) return false;
+  const { error, count } = await db()
+    .from('listings')
+    .delete({ count: 'exact' })
+    .eq('id', listingId)
+    .eq('tour_id', tourId);
+  if (error) throw error;
+  return (count ?? 0) > 0;
+}
+
+/* ─── Conversations ──────────────────────────────────────────────────────── */
+
+export async function listConversationsByTour(tourId: string): Promise<ConversationMessage[]> {
+  if (!isUuid(tourId)) return [];
+  const { data, error } = await db()
+    .from('conversations')
+    .select('*')
+    .eq('tour_id', tourId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data as ConversationRow[]).map(rowToConversation);
+}
+
+export async function getConversationsByListing(
+  tourId: string,
+  listingKey: string,
+): Promise<ConversationMessage[]> {
+  if (!isUuid(tourId)) return [];
+  const { data, error } = await db()
+    .from('conversations')
+    .select('*')
+    .eq('tour_id', tourId)
+    .eq('listing_key', listingKey)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data as ConversationRow[]).map(rowToConversation);
+}
+
+export async function addConversationMessage(
+  tourId: string,
+  msg: ConversationMessage,
+): Promise<ConversationMessage> {
+  const userId = getCurrentUserId();
+  const { data, error } = await db()
+    .from('conversations')
+    .insert({
+      tour_id: tourId,
+      user_id: userId,
+      listing_key: msg.listingId || BUYER_LISTING_KEY,
+      sender: msg.sender,
+      sender_name: msg.senderName,
+      body: msg.body,
+      ts_label: msg.timestamp,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return rowToConversation(data as ConversationRow);
+}
+
+/**
+ * Bulk-replace all conversations for a tour. Used by /conversations/seed
+ * which always wipes & regenerates the mock thread.
+ */
+export async function replaceConversationsForTour(
+  tourId: string,
+  messages: ConversationMessage[],
+): Promise<void> {
+  const userId = getCurrentUserId();
+  const c = db();
+  const { error: delErr } = await c.from('conversations').delete().eq('tour_id', tourId);
+  if (delErr) throw delErr;
+  if (!messages.length) return;
+  const rows = messages.map((m) => ({
+    tour_id: tourId,
+    user_id: userId,
+    listing_key: m.listingId || BUYER_LISTING_KEY,
+    sender: m.sender,
+    sender_name: m.senderName,
+    body: m.body,
+    ts_label: m.timestamp,
+  }));
+  const { error } = await c.from('conversations').insert(rows);
+  if (error) throw error;
+}
+
+/* ─── Scheduling ─────────────────────────────────────────────────────────── */
+
+import { planSchedule, type ScheduleRequest } from '../scheduling/planSchedule';
+import { getOneMapToken } from '../scheduling/oneMapClient';
+import { getBuyerSlotsForTour } from './conversationsMock';
+
+export async function startSchedulingRun(tourId: string): Promise<SchedulingRun> {
+  const userId = getCurrentUserId();
+  const jwt = getCurrentJwt();
+  const { data, error } = await db()
+    .from('scheduling_runs')
+    .insert({
+      tour_id: tourId,
+      user_id: userId,
+      status: 'running',
+      progress: 0,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  const run = rowToSchedulingRun(data as SchedulingRunRow);
+
+  // Kick off the real scheduler asynchronously.
+  void runScheduler(run.id, tourId, userId, jwt);
+
+  return run;
+}
+
+async function probeOneMap(): Promise<boolean> {
+  try {
+    const t = await getOneMapToken();
+    return Boolean(t && t.length > 10);
+  } catch (e) {
+    console.warn(
+      '[scheduler] OneMap token unavailable → falling back to Haversine:',
+      (e as Error).message.split('\n')[0],
+    );
+    return false;
+  }
+}
+
+async function runScheduler(
+  runId: string,
+  tourId: string,
+  userId: string,
+  jwt: string,
+): Promise<void> {
+  return runWithUser({ userId, jwt }, async () => {
+    const finishWith = async (mutate: (run: SchedulingRunRow) => Partial<SchedulingRunRow>) => {
+      const c = db();
+      const { data: existing } = await c
+        .from('scheduling_runs')
+        .select('*')
+        .eq('id', runId)
+        .maybeSingle();
+      if (!existing) return;
+      const patch = mutate(existing as SchedulingRunRow);
+      await c.from('scheduling_runs').update(patch).eq('id', runId);
+    };
+
+    try {
+      const listings = await listListingsByTour(tourId);
+
+      const reachable: Listing[] = [];
+      const blocked: Listing[] = [];
+      for (const l of listings) {
+        if (l.agentReachable === false) blocked.push(l);
+        else reachable.push(l);
+      }
+
+      const buyerSlots = getBuyerSlotsForTour(tourId);
+      const useOneMap = await probeOneMap();
+
+      const scheduleRequest: ScheduleRequest = {
+        buyerSlots: buyerSlots.map((w) => ({ ...w })),
+        listings: reachable.map((l) => ({
+          listingId: l.id,
+          address: l.address || l.title,
+          lat: l.lat,
+          lng: l.lng,
+          agentName: l.coAgent?.name || 'Unknown',
+          availableSlots: (l.availability || []).map((w) => ({ ...w })),
+        })),
+        config: { useOneMap, viewingDurationMinutes: 30, bufferMinutes: 15 },
+      };
+
+      console.log(
+        '[scheduler] run',
+        runId,
+        'tour',
+        tourId,
+        `reachable=${reachable.length} blocked=${blocked.length} buyerSlots=${buyerSlots.length} useOneMap=${useOneMap}`,
+      );
+
+      const t0 = Date.now();
+      const result = await planSchedule(scheduleRequest);
+      console.log(
+        '[scheduler] planSchedule done in',
+        Date.now() - t0,
+        'ms',
+        'scheduled=',
+        result.schedule.length,
+        'unschedulable=',
+        result.unschedulable.length,
+      );
+
+      const scheduledById = new Map(result.schedule.map((sv) => [sv.listingId, sv]));
+      const unschedById = new Map(result.unschedulable.map((u) => [u.listingId, u]));
+
+      let scheduledCount = 0;
+      let attentionCount = 0;
+
+      // Re-fetch listings to update them; also collect new attention items.
+      const liveListings = await listListingsByTour(tourId);
+      const c = db();
+
+      for (const l of liveListings) {
+        if (l.agentReachable === false) {
+          attentionCount++;
+          await ensureAttentionItem(c, tourId, userId, l.id, l.attentionReason || 'Co-agent unreachable');
+          continue;
+        }
+        const sched = scheduledById.get(l.id);
+        if (sched) {
+          await c
+            .from('listings')
+            .update({
+              status: 'confirmed',
+              status_label: 'Confirmed',
+              suggested_time: `${sched.startTime} – ${sched.endTime}`,
+              attention_reason: null,
+            })
+            .eq('id', l.id);
+          scheduledCount++;
+          continue;
+        }
+        const un = unschedById.get(l.id);
+        if (un) {
+          await c
+            .from('listings')
+            .update({
+              status: 'needs-attention',
+              status_label: 'No matching slot',
+              suggested_time: 'Pending',
+              attention_reason: un.reason,
+            })
+            .eq('id', l.id);
+          attentionCount++;
+          await ensureAttentionItem(c, tourId, userId, l.id, un.reason);
+        }
+      }
+
+      await finishWith(() => ({
+        status: 'completed',
+        progress: 100,
+        completed_at: new Date().toISOString(),
+        scheduled_count: scheduledCount,
+        attention_count: attentionCount,
+      }));
+
+      console.log(
+        '[scheduler] ✓ run',
+        runId,
+        'done',
+        `scheduled=${scheduledCount} attention=${attentionCount}`,
+      );
+    } catch (err) {
+      console.error('[scheduler] ✗ run', runId, 'failed:', err);
+      await finishWith(() => ({
+        status: 'failed',
+        completed_at: new Date().toISOString(),
+      }));
+    }
+  });
+}
+
+async function ensureAttentionItem(
+  c: SupabaseClient,
+  tourId: string,
+  userId: string,
+  listingId: string,
+  reason: string,
+): Promise<void> {
+  const { data: existing } = await c
+    .from('attention_items')
+    .select('id')
+    .eq('tour_id', tourId)
+    .eq('listing_id', listingId)
+    .eq('resolved', false)
+    .maybeSingle();
+  if (existing) return;
+  await c.from('attention_items').insert({
+    tour_id: tourId,
+    user_id: userId,
+    listing_id: listingId,
+    reason,
+    resolved: false,
+  });
+}
+
+export async function getSchedulingRun(runId: string): Promise<SchedulingRun | undefined> {
+  if (!isUuid(runId)) return undefined;
+  const { data, error } = await db()
+    .from('scheduling_runs')
+    .select('*')
+    .eq('id', runId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToSchedulingRun(data as SchedulingRunRow) : undefined;
+}
+
+/* ─── Attention Items ────────────────────────────────────────────────────── */
+
+export async function listAttentionItems(tourId: string): Promise<AttentionItem[]> {
+  if (!isUuid(tourId)) return [];
+  const { data, error } = await db()
+    .from('attention_items')
+    .select('*')
+    .eq('tour_id', tourId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data as AttentionItemRow[]).map(rowToAttentionItem);
+}
+
+export async function resolveAttentionItem(
+  itemId: string,
+  resolution: string,
+): Promise<AttentionItem | undefined> {
+  if (!isUuid(itemId)) return undefined;
+  const { data, error } = await db()
+    .from('attention_items')
+    .update({ resolved: true, resolution })
+    .eq('id', itemId)
+    .select()
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToAttentionItem(data as AttentionItemRow) : undefined;
+}
+
+/* ─── Routes ─────────────────────────────────────────────────────────────── */
+
+export async function generateRoute(tourId: string): Promise<AgentRoute> {
+  const userId = getCurrentUserId();
+  const tour = await getTourDetail(tourId);
+  const listings = await listListingsByTour(tourId);
+
+  const startMin = (s: string | undefined): number => {
+    if (!s) return Number.POSITIVE_INFINITY;
+    const m = /(\d{1,2}):(\d{2})/.exec(s);
+    if (!m) return Number.POSITIVE_INFINITY;
+    return Number(m[1]) * 60 + Number(m[2]);
+  };
+  const confirmedListings = listings
+    .filter((l) => l.status === 'confirmed')
+    .sort((a, b) => startMin(a.suggestedTime) - startMin(b.suggestedTime));
+
+  const stops: RouteStop[] = confirmedListings.map((listing) => ({
+    id: `stop-${listing.id}`,
+    listingId: listing.id,
+    time: listing.suggestedTime || 'Pending',
+    title: listing.title,
+    address: listing.address,
+    area: listing.area,
+    condo: listing.condo,
+    unitNo: listing.unitNo,
+    coAgentName: listing.coAgent.name,
+    coAgentPhone: listing.coAgent.phone,
+    googleMapsUrl: listing.googleMapsUrl,
+    notes: listing.summary,
+  }));
+
+  const c = db();
+  // Replace any existing route(s) for the tour
+  const { error: delErr } = await c.from('routes').delete().eq('tour_id', tourId);
+  if (delErr) throw delErr;
+
+  const { data, error } = await c
+    .from('routes')
+    .insert({
+      tour_id: tourId,
+      user_id: userId,
+      title: tour?.title || 'Viewing Route',
+      date: tour?.targetDate || 'Today',
+      stops,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return rowToRoute(data as RouteRow, tour?.planId || '');
+}
+
+export async function getRouteById(routeId: string): Promise<AgentRoute | undefined> {
+  if (!isUuid(routeId)) return undefined;
+  const { data, error } = await db()
+    .from('routes')
+    .select('*, tours(plan_id)')
+    .eq('id', routeId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return undefined;
+  const planId = (data as RouteRow & { tours?: { plan_id: string } }).tours?.plan_id || '';
+  return rowToRoute(data as RouteRow, planId);
+}
+
+/**
+ * Generate a share token for a route. Anyone holding the token can read
+ * the (sanitized) client-facing route via /api/share/routes/:token.
+ */
+export async function shareRoute(
+  routeId: string,
+): Promise<{ shareToken: string; shareUrl: string }> {
+  if (!isUuid(routeId)) throw new Error('Route not found');
+  const userId = getCurrentUserId();
+  const token = `share_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  const { error } = await db()
+    .from('share_tokens')
+    .insert({ token, route_id: routeId, user_id: userId });
+  if (error) throw error;
+  return { shareToken: token, shareUrl: `/share/routes/${token}` };
+}
+
+/**
+ * Public share lookup. Implemented via a SECURITY DEFINER RPC on the DB
+ * (`get_route_by_share_token`) so it works without a user JWT and so RLS
+ * policies don't get in the way. Called from the unauthenticated route in
+ * server.ts using `supabaseAdmin`.
+ */
+export async function getRouteByShareToken(token: string): Promise<ClientRoute | undefined> {
+  const { data, error } = await supabaseAdmin.rpc('get_route_by_share_token', {
+    p_token: token,
+  });
+  if (error) throw error;
+  return (data as ClientRoute) ?? undefined;
+}
+
+/* ─── PG → business Listing mapper (pure) ───────────────────────────────── */
+
+/**
+ * Map a freshly-scraped PropertyGuru row (PropertyGuruListing shape) into the
+ * business `Listing` shape used by butler-web-store + frontend + scheduler.
+ *
+ * Note: the returned listing's `id` is a synthetic "pg-XXXXXX" string. When
+ * inserted via addListingToTourWeb(), this is converted into:
+ *   - `pg_listing_id` column = "XXXXXX"  (used to dedupe within a tour)
+ *   - `id` column = a freshly assigned uuid (actual primary key)
+ */
+export function pgToBusinessListing(
+  pg: Record<string, unknown>,
+  fallbackUrl: string,
+): Listing {
+  const pickStr = (...keys: string[]): string => {
+    for (const k of keys) {
+      const v = pg[k];
+      if (v == null) continue;
+      if (typeof v === 'string' && v.trim()) return v;
+      if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+    }
+    return '';
+  };
+  const pickNum = (...keys: string[]): number => {
+    for (const k of keys) {
+      const v = pg[k];
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+      if (typeof v === 'string' && v.trim() && !Number.isNaN(Number(v))) return Number(v);
+    }
+    return 0;
+  };
+
+  const listingId = pickStr('listingId') || '';
+  const id = listingId
+    ? `pg-${listingId}`
+    : `import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const rawAddress = pickStr('address');
+  const priceLabel = pickStr('priceLabel', 'price');
+  const psfLabel = pickStr('psfLabel', 'psf');
+  const beds = pickNum('bedrooms', 'beds');
+  const baths = pickNum('bathrooms', 'baths');
+  const sqft = pickNum('areaSqft', 'sqft');
+  const imageUrl = pickStr('imageUrl', 'image', 'thumbnail');
+  const propertyGuruUrlVal = pickStr('propertyGuruUrl', 'url') || fallbackUrl;
+  const rawText = pickStr('rawText');
+
+  const llm = (pg as { _llm?: Partial<{ condo: string; address: string; area: string; coAgentName: string; coAgentAgency: string }> })._llm;
+  const fallback = parsePgRawText(rawText, rawAddress);
+
+  const condo = (llm?.condo && llm.condo.trim()) || fallback.condo;
+  const address = (llm?.address && llm.address.trim()) || fallback.cleanAddress || rawAddress;
+  const area = (llm?.area && llm.area.trim()) || fallback.area || deriveAreaFromAddress(address);
+  const coAgentName =
+    (llm?.coAgentName && llm.coAgentName.trim()) || fallback.agentName || pickStr('title') || 'Unknown';
+  const coAgentAgency =
+    (llm?.coAgentAgency && llm.coAgentAgency.trim()) || pickStr('agent') || '';
+
+  const pgCoAgent = (pg as { coAgent?: { phone?: string; whatsapp?: string; agency?: string } }).coAgent;
+  const coAgentPhone = (pgCoAgent?.phone || pgCoAgent?.whatsapp || '').trim();
+  const coAgentAgencyFinal = (pgCoAgent?.agency && pgCoAgent.agency.trim()) || coAgentAgency;
+
+  const displayTitle = condo
+    ? `${condo}${beds ? ` · ${beds} bed` : ''}`
+    : address || pickStr('title') || 'Untitled Listing';
+
+  return {
+    id,
+    title: displayTitle,
+    address,
+    area: area || 'Unknown',
+    condo,
+    price: priceLabel || '$0',
+    beds,
+    baths,
+    sqft,
+    psf: psfLabel || '0',
+    imageUrl,
+    status: 'imported',
+    statusLabel: 'Imported',
+    suggestedTime: 'Pending',
+    unitNo: '',
+    coAgent: { name: coAgentName, phone: coAgentPhone, agency: coAgentAgencyFinal },
+    googleMapsUrl: address ? mapsUrl(address) : '',
+    propertyGuruUrl: propertyGuruUrlVal,
+    summary: 'Imported from PropertyGuru. AI PA has not contacted the co-agent yet.',
+  };
+}
+
+function parsePgRawText(
+  rawText: string,
+  rawAddress: string,
+): { condo: string; agentName: string; area: string; cleanAddress: string } {
+  const fallbackArea = deriveAreaFromAddress(rawAddress);
+  if (!rawText) return { condo: '', agentName: '', area: fallbackArea, cleanAddress: '' };
+
+  const lines = rawText.split('\n').map((s) => s.trim()).filter(Boolean);
+
+  const psfIdx = lines.findIndex((l) => /\bpsf\b/i.test(l));
+  let condo = '';
+  let cleanAddress = '';
+
+  const looksLikeAddress = (line: string): boolean => {
+    if (!line) return false;
+    if (!/^\d+[A-Za-z]?\s+\S/.test(line)) return false;
+    if (/\bsqft\b/i.test(line) || /S\$/.test(line)) return false;
+    return true;
+  };
+
+  const looksLikeProjectName = (line: string): boolean => {
+    if (!line) return false;
+    if (looksLikeAddress(line)) return false;
+    if (/\bsqft\b/i.test(line) || /S\$/.test(line)) return false;
+    if (/^\d+$/.test(line)) return false;
+    if (/[!/]/.test(line) && line.length > 25) return false;
+    if (line.length > 60) return false;
+    return true;
+  };
+
+  if (psfIdx >= 0) {
+    const next1 = lines[psfIdx + 1] || '';
+    const next2 = lines[psfIdx + 2] || '';
+    if (looksLikeAddress(next1)) {
+      cleanAddress = next1;
+    } else if (looksLikeProjectName(next1) && looksLikeAddress(next2)) {
+      condo = next1;
+      cleanAddress = next2;
+    } else if (looksLikeProjectName(next1)) {
+      condo = next1;
+    }
+  }
+
+  if (!cleanAddress) {
+    if (rawAddress && !/[!/]/.test(rawAddress) && rawAddress.length < 60) {
+      cleanAddress = rawAddress;
+    }
+  }
+
+  const PROMO_BANNERS = new Set(['Explore around', 'Listing with similar price range', 'PROMOTED', 'Contact']);
+  let agentName = '';
+  for (const line of lines.slice(0, 6)) {
+    if (PROMO_BANNERS.has(line)) continue;
+    if (/^\d+(\.\d+)?$/.test(line)) continue;
+    if (/^\(\d+\)$/.test(line)) continue;
+    if (/PTE\.?\s*LTD/i.test(line)) continue;
+    if (/REALTY|NETWORK|PROPNEX|ORANGETEE|ERA\b/i.test(line)) continue;
+    agentName = line;
+    break;
+  }
+
+  const area = deriveAreaFromAddress(cleanAddress) || fallbackArea;
+  return { condo, agentName, area, cleanAddress };
+}
+
+function deriveAreaFromAddress(address: string): string {
+  if (!address) return '';
+  const withoutNumber = address.replace(/^\s*\d+[A-Za-z]?\s+/, '').trim();
+  if (!withoutNumber) return '';
+  const ROAD_TYPES = /\s+(Walk|Avenue|Avenue \d+|Road|Street|Lane|Crescent|Drive|Way|Ave|St|Rd|Dr)\s*\d*$/i;
+  const cleaned = withoutNumber.replace(ROAD_TYPES, '').trim();
+  return cleaned || withoutNumber;
+}
