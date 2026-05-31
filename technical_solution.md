@@ -1,616 +1,307 @@
-# Technical Solution: Butler — Tour Planning Platform
+# Technical Solution — Butler / Appointment Scheduler
 
-## Purpose of This Document
+> **Audience**: future coding agents (Codebuddy, Claude, Cursor, GPT, …) and any developer joining the project.
+> **Purpose**: a *concise* but *current* picture of the architecture so you don't have to re-scan the entire repo on every task.
+>
+> **Maintenance rule**: after any significant change (data model, routes, deployment topology, secrets, dependencies, dev workflow), update this file in the same turn. Then add a one-paragraph entry to `change_log.md`.
 
-This file is the technical handoff for future coding agents and planning agents.
-
-It answers three questions:
-
-1. What has already been built in this repo?
-2. What is the real architecture and tech stack?
-3. What should be built next, and in what order?
-
-Maintenance rule: after any significant architectural, data-model, API, persistence, routing, or workflow change, update this file in the same turn.
-
-Product spec reference: `功能规格_智能搜房与看房行程规划.md` (located in user's Downloads, not in repo). Design system reference: `BUTLER.md`.
+Last updated: **2026-06-01** (post Supabase integration + first Aliyun deploy with auth).
 
 ---
 
-## Current Product Direction
+## 1. Product, in one paragraph
 
-Butler is a tour-planning platform for independent property agents in Singapore. The core workflow:
-
-1. Agent creates a Tour (plan) for a buyer/tenant client.
-2. Agent searches for listings (conversational AI search with tag engine).
-3. Buyer confirms interested listings + available time slots via a no-login link.
-4. Agent reviews AI-suggested geographic groupings and triggers coordination.
-5. AI contacts all opposing agents via WhatsApp (using the agent's own business number via Cloud API).
-6. AI collects availability, performs global schedule optimization, negotiates precise times.
-7. Exceptions surface as decision cards for human review.
-8. Final itinerary is generated and shared to buyer via WhatsApp.
-
-Current stage: **High-fidelity UI prototype complete + backend REST API complete through scheduling. WhatsApp and AI integration not yet started.**
+Butler is a **viewing-tour planning platform** for independent property agents in Singapore. An agent creates a "plan" for a buyer client, imports candidate listings (manually, via PropertyGuru search/detail scraper, or via a Chrome extension that scrapes the page the agent is currently on), confirms buyer + opposing-agent availability, and lets the system compute a route-aware viewing schedule. Authentication is per-agent (one Supabase user = one agent's workspace). RLS enforces that one agent never sees another's plans/listings.
 
 ---
 
-## Architecture Overview
-
-The project is a **two-service split**: a Vite React SPA (frontend) and a standalone Express TypeScript API (backend). This is NOT a Next.js monolith — the old `technical_solution.md` was wrong about that.
+## 2. Repo layout
 
 ```
 appointment_scheduler/
-├── frontend/          # Vite + React 18 SPA (JSX, not TypeScript)
-│   ├── src/
-│   │   ├── App.jsx           # React Router v6, all routes
-│   │   ├── screens/          # 14 page components
-│   │   ├── components/       # Shared UI (iOS-style frame, nav, keyboard, etc.)
-│   │   ├── context/          # ButlerContext — global state via React Context
-│   │   ├── lib/              # api.js (HTTP client), adapters.js (data transforms)
-│   │   ├── data.js           # Static demo data for search prototype
-│   │   └── styles.css        # Global styles, inline styles in components
-│   ├── index.html
-│   └── package.json
-├── backend/           # Express 4 + TypeScript API
-│   ├── src/
-│   │   ├── server.ts         # All route handlers (single file)
-│   │   ├── lib/
-│   │   │   ├── types.ts          # Domain model types
-│   │   │   ├── mockData.ts       # Seed data
-│   │   │   ├── store.ts          # JSON file read/write helpers
-│   │   │   ├── http.ts           # Error response helpers
-│   │   │   ├── butlerCatalog.ts  # Static listing catalog for search
-│   │   │   ├── api/
-│   │   │   │   └── validation.ts # Request validation
-│   │   │   ├── repositories/
-│   │   │   │   ├── toursRepository.ts
-│   │   │   │   ├── butlerRepository.ts   # Threads, exceptions, inbox, itinerary, search
-│   │   │   │   ├── clientsRepository.ts
-│   │   │   │   └── settingsRepository.ts
-│   │   │   └── scheduling/
-│   │   │       └── scheduler.ts  # Deterministic greedy scheduler v1
-│   │   └── data/
-│   │       └── tours.json    # Seed data (bundled, not runtime)
-│   ├── data/                 # Runtime JSON persistence (gitignored)
-│   │   ├── tours.json
-│   │   ├── butler.json
-│   │   ├── clients.json
-│   │   └── settings.json
-│   └── package.json
-├── frontend.backup-*/  # Old Next.js codebase (archived, do not use)
-├── BUTLER.md           # Design system spec
-├── README.md
-└── technical_solution.md  # This file
+├── web/                     ← React + Vite + TS frontend (the active one).
+│                              Origin: cloned from Daven's daven009/butler-web,
+│                              now integrated. web/.git is a NESTED standalone
+│                              git repo pointing at daven009/butler-web — DO NOT
+│                              push to it; only push the parent repo's `staging`
+│                              (or `staging-supabase-integration`) branch on
+│                              `daven009/butler`.
+├── backend/                 ← Express + TypeScript (tsx) API server.
+├── extension/               ← Chrome MV3 extension "Butler PG Importer".
+├── deploy/                  ← Aliyun deployment scripts + nginx configs.
+├── frontend/                ← LEGACY Next.js prototype. Still in repo because
+│                              root package.json's npm workspaces references it,
+│                              but no longer the production UI. Safe to ignore.
+├── _archive_2026-06-01/     ← Quarantined backups (gitignored). Contains the
+│                              old phone-frame demo, recovery snapshots, the
+│                              previous technical_solution.md. Don't push.
+├── BUTLER.md                ← Visual / interaction design language.
+├── DESIGN.md                ← Higher-level UX spec (older).
+├── DEV_PLAN.md              ← Roadmap notes (sparse).
+├── DEPLOYMENT_GUIDE.md      ← End-user deploy runbook (also kept current).
+├── README.md                ← OUTDATED (Next.js era). Don't trust for arch info.
+├── technical_solution.md    ← THIS FILE.
+└── change_log.md            ← Running log of significant changes.
 ```
+
+Extras at root (gitignored):
+- `.env` — root-level. Used by `docker compose` build/run; mirrors `backend/.env`.
+- `appointment-scheduler.tar.gz` — large local-only artifact (unrelated OCI image archive). Keep but never push.
+- `node_modules/`, `web/node_modules/`, `backend/node_modules/`.
 
 ---
 
-## Runtime and Scripts
+## 3. Stack at a glance
 
-### Frontend
+| Layer | Tech | Notes |
+|---|---|---|
+| Frontend | **React 19 + Vite 7 + TypeScript** | Single-file `web/src/App.tsx` (~2200 LOC) holds most of the UI. Tailwind + shadcn/ui (full library under `web/src/components/ui/`). |
+| Routing | **No router** | App.tsx is one big SPA; no `react-router-dom` is imported by the actual code. (There's an `index.html` script tag pointing at `/src/main.tsx`.) |
+| Auth | **Supabase Auth (email + password)** | `web/src/auth.ts` + `web/src/SignIn.tsx`. JWT carried in `localStorage` by `@supabase/supabase-js`. Backend verifies it on every `/api/*` call. |
+| State | Local component state in App.tsx + Supabase client cache | No Redux/Zustand. |
+| Frontend HTTP | `web/src/api.ts` | Reads `import.meta.env.VITE_API_BASE` (default `/api`); auto-attaches `Authorization: Bearer <jwt>` from the Supabase session. |
+| Backend | **Node 22 + Express + tsx (dev) / `tsc` (prod)** | Single `backend/src/server.ts` (~570 LOC) declares all routes. |
+| Backend HTTP middleware | `requireUser` mounted at `app.use('/api', requireUser)` | Decodes Supabase JWT, calls `runWithUser({userId, jwt}, next)` so each request runs in an `AsyncLocalStorage` user context. Repositories read `getCurrentUserId()` / `getCurrentJwt()` to call Supabase **as the user**, so RLS is enforced. |
+| DB | **Supabase Postgres (Singapore region)** | Schema in `backend/supabase/schema.sql`. |
+| LLM | **OpenAI** (`gpt-4o-mini`-class) | Used to extract structured fields from raw PG listing text. |
+| Maps / geocoding | **OneMap (Singapore gov't)** | Free with login; `backend/src/lib/scheduling/oneMapClient.ts` auto-refreshes token via `ONEMAP_EMAIL` + `ONEMAP_PASSWORD`. Geocode results cached in `backend/data/geocode-cache.json` (gitignored, per-machine). |
+| Scraper | **Playwright (Chromium)** | `backend/src/lib/scrapers/propertyGuru.ts` (~1300 LOC). On the server we run with `Xvfb :99` (see `deploy/start.sh`) so headed Chrome can pass Cloudflare Turnstile. Concurrency-limited via `backend/src/lib/scrapers/scrapeQueue.ts`. |
+| Extension | **MV3, vanilla JS** (Manifest 3, service worker + content script) | Lives in `extension/`. See § 7 below. |
+| Build / package | **npm workspaces** at root (`frontend`, `backend`); `web` is intentionally *outside* the workspace because it's a separate vendor-style project. | `npm install` from root only installs frontend+backend. For web, do `cd web && npm install` separately. |
 
-```json
-{
-  "name": "butler-tour-planner",
-  "type": "module",
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.0"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.0",
-    "vite": "^5.4.0"
-  }
-}
+---
+
+## 4. Backend — routes & rules
+
+All routes live in `backend/src/server.ts`. Auth boundary is the line `app.use('/api', requireUser)` — anything under `/api/*` requires a valid Supabase JWT in `Authorization: Bearer …`.
+
+Public:
+- `GET /health` — `{ ok: true }`. Used by docker healthcheck and host nginx.
+- `GET /api/share/:token` — read-only client-facing route view (uses Supabase RPC).
+
+Auth-required (`/api/*`):
+
+| Group | Endpoints | Backed by |
+|---|---|---|
+| Plans | `GET /api/plans`, `POST /api/plans`, `GET /api/plans/:planId/tours`, `POST /api/plans/:planId/tours` | `lib/repositories/plansRepository.ts` (Supabase: `plans`, `tours`) |
+| Tours | `GET/PATCH/POST /api/tours/:id...` (listings, buyer-availability, opposing-availability, coordination-events, status, generate-schedule, etc.) | Same repo + `lib/scheduling/planSchedule.ts` |
+| Tour import | `POST /api/tours/:tourId/import` (server-side scrape via Playwright), `POST /api/tours/:tourId/import-from-extension` (extension already scraped DOM, server only enriches + persists) | `lib/scrapers/propertyGuru.ts` (search/detail), `lib/scrapers/scrapeQueue.ts` (concurrency), `lib/llm/pgListingParser.ts` (extract fields), `lib/scheduling/geoCache.ts` (geocoding), `lib/repositories/pgListingsRepository.ts` (cross-user archive) |
+| Conversations / decision cards | `/api/tours/:id/listings/:lid/coordination-events`, `/api/conversations/...` | `lib/repositories/conversationsMock.ts` |
+| Search (legacy) | `/api/search/parse-llm`, `/api/search/filter-llm`, `/api/scrape/propertyguru` | LLM + scraper; tour-less helpers from earlier prototype |
+| PG raw listings | `GET /api/pg-listings`, `POST /api/pg-listings/check`, `POST /api/pg-listings/by-ids` | `pgListingsRepository.ts` (still local JSON, see § 6) |
+| Clients / Settings | `/api/clients/...`, settings endpoints | Local JSON repos (legacy) |
+
+When something "doesn't show up" for a user in production, it's almost always RLS — every Supabase-backed query runs under the user's JWT, so a row without `user_id = auth.uid()` is invisible. This is by design.
+
+---
+
+## 5. Database schema (Supabase)
+
+Source of truth: `backend/supabase/schema.sql`. To bring up a fresh project, paste the file into the Supabase SQL editor.
+
+Per-user, RLS-protected tables (all carry `user_id uuid references auth.users(id)`):
+- `plans`, `tours`, `listings`, `conversations`, `routes`, `scheduling_runs`, `attention_items`
+
+Public (cross-user) cache, RLS disabled, **service-role only**:
+- `pg_listings_archive` — one row per PG listing, dedup by `pg_listing_id`. Frontend never touches it; backend writes via `service_role`.
+
+A single `set_updated_at` trigger mirrors `updated_at` on every UPDATE. RLS policies are the standard Supabase pattern: `using (auth.uid() = user_id)` + same for `with check`.
+
+---
+
+## 6. Where each piece of state lives
+
+| Data | Location | Why |
+|---|---|---|
+| Auth users | `auth.users` (Supabase) | Provider-managed |
+| Plans / tours / listings / conversations / routes / scheduling runs / attention items | `public.*` tables (Supabase, per-user RLS) | Multi-tenant, durable |
+| PG raw listings cache (full DOM scrape) | `public.pg_listings_archive` (Supabase, cross-user, service_role) | One agent's scrape benefits all agents — no PII leaks because we don't store agent-private fields here |
+| **Geocoding cache** | `backend/data/geocode-cache.json` (gitignored, **per-machine**) | TODO: move to DB so production and dev share one cache |
+| **PG scrape result archive (legacy local copy)** | `backend/data/pg-listings.json` (gitignored, **per-machine**) | TODO: deprecate, only `pg_listings_archive` should exist |
+| **Legacy: butler / clients / tours JSON** | `backend/data/butler-web-store.json` etc. (gitignored) | Older `/api/clients`, `/api/tours/...` routes still read from these. Slated for migration. |
+
+If you see a stale-data bug ("the listing is there for me but not for them"), it's almost always one of: (a) the data is in the local JSON cache, not Supabase; or (b) the Supabase row has the wrong `user_id` and RLS hides it.
+
+---
+
+## 7. Chrome extension — "Butler PG Importer"
+
+Location: `extension/`. Distributed as `extension/butler-pg-importer-1.0.2.zip` (current) and `1.0.1.zip` (previous, kept for diff). Source files (`manifest.json`, `background.js`, `content.js`, `popup.{html,css,js}`, `icons/`) are unzipped in the same folder so they're diffable in git.
+
+### What it does
+- **Manifest V3.** Service worker = `background.js`. Content script = `content.js`, runs on `https://www.propertyguru.com.sg/listing/*`.
+- Two modes (set in popup):
+  - **Basic** — read whatever PG already rendered. Cheap, instant, no clicks.
+  - **Advanced (opt-in)** — smooth-scrolls, clicks "see more", cycles the carousel, clicks the "show phone" button (this triggers a "buyer interested" notification on PG, which is why it's opt-in). Then runs the basic extractor.
+- Pushes the result to backend `POST /api/tours/:tourId/import-from-extension`.
+- Also exposes an *external* API: the Butler web app calls `chrome.runtime.sendMessage(extensionId, …)` to (a) check it's installed, (b) push the user's Supabase JWT for backend auth, (c) trigger an "Import via tab" flow that opens PG, runs advanced mode, and closes the tab.
+
+### Auth model (added 2026-06-01 in v1.0.2)
+Before v1.0.2 the extension called the backend **without `Authorization`** — every call would 401 once `requireUser` was enabled. v1.0.2 fixes this:
+
+1. After Butler web sign-in, `web/src/extensionBridge.ts → storeTokenInExtension(jwt)` posts `{type: 'STORE_TOKEN', token}` to the extension via `chrome.runtime.sendMessage`.
+2. `background.js` now handles `STORE_TOKEN` (and `CLEAR_TOKEN`) in `onMessageExternal`, persists the JWT under `chrome.storage.local.butlerToken`.
+3. All `postToBackend` / `getJsonFromBackend` calls in `background.js` go through `buildAuthHeaders()`, which auto-adds `Authorization: Bearer <jwt>`.
+4. Backend RLS therefore sees the same `user_id` as the web app — the listing imported via extension belongs to the agent who's signed in. Users only ever see their own imports.
+
+### Extension ID
+- Production (Chrome Web Store): `melnenopfkellcalpdbopiickpmidjld`. Hardcoded as `DEFAULT_EXTENSION_ID` in `web/src/extensionBridge.ts`.
+- Dev (unpacked): the ID is unstable per-machine. Override via `localStorage.setItem('butler.extensionId', '<id>')` in butler web devtools.
+
+### Allowed origins (for `externally_connectable`)
+`http://localhost`, `http://localhost:5173`, `http://127.0.0.1[:5173]`, `https://47.236.98.146`. If you change the production URL, update `manifest.json` and rebump version.
+
+### To rebuild
+```bash
+cd extension
+zip -r butler-pg-importer-1.0.X.zip manifest.json background.js content.js popup.{html,css,js} icons/
 ```
+Then load unpacked in `chrome://extensions` (dev) or upload to Web Store (prod).
+
+---
+
+## 8. Local development
+
+Prerequisites: Node 22+, npm 10+, a Supabase project (you can join the existing one if you have credentials, or spin up a fresh one and run `backend/supabase/schema.sql`).
 
 ```bash
-cd frontend && npm run dev    # Vite dev server on http://localhost:5173
-cd frontend && npm run build  # Production build to frontend/dist/
+# 1. Clone (one-time)
+git clone git@github.com:daven009/butler.git
+cd butler && git checkout staging-supabase-integration   # current active branch
+
+# 2. Install (root npm workspaces installs frontend + backend; web is separate)
+npm install
+cd web && npm install && cd ..
+
+# 3. Configure secrets — NEVER commit these
+cp backend/.env.example backend/.env       # fill in Supabase URL/keys, OpenAI, OneMap
+cp web/.env.example     web/.env.local     # fill in VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
+
+# 4. Run (two terminals)
+cd backend && npm run dev      # → http://localhost:8787
+cd web     && npm run dev      # → http://localhost:5173 (proxies /api → 8787)
+
+# 5. Sign in: any email + ≥6-char password. Supabase "Confirm email" should be OFF
+#    in Auth → Providers → Email for internal testing.
 ```
 
-### Backend
-
-```json
-{
-  "name": "butler-backend",
-  "type": "module",
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.21.2"
-  },
-  "devDependencies": {
-    "tsx": "^4.20.6",
-    "typescript": "^5.9.3"
-  }
-}
+Loading the unpacked extension:
+```
+chrome://extensions → Developer mode ON → Load unpacked → select extension/
+# Note the assigned ID, then in Butler devtools:
+#   localStorage.setItem('butler.extensionId', '<that id>')
+# Sign in to Butler — it will push the JWT into the extension automatically.
 ```
 
+---
+
+## 9. Deployment (Aliyun ECS)
+
+### Topology
+```
+Browser ─── HTTPS ──→  47.236.98.146 (Aliyun ECS, Alibaba Cloud Linux 3)
+                         ├── host nginx :443 (self-signed cert)
+                         │     └── reverse-proxies to 127.0.0.1:3080
+                         └── docker container "appointment-scheduler" (port :80 inside)
+                                ├── in-container nginx
+                                │      ├── /             → /usr/share/nginx/html (vite build)
+                                │      ├── /api/*        → 127.0.0.1:8787
+                                │      └── /health       → 127.0.0.1:8787/health
+                                ├── node 22 + tsx running backend/src/server.ts on :8787
+                                └── Xvfb :99 for Playwright headed mode
+```
+
+Server: `47.236.98.146`, root SSH (key-based), Docker 26 + Compose v2.27. Deploy dir `/opt/appointment-scheduler/` (compose runtime) + `/opt/appointment-scheduler/src/` (extracted source for `docker compose build`).
+
+### Files
+- `Dockerfile` — multi-stage. Stage 1 (`frontend-build`): `node:22-bookworm` runs `npm ci && npm run build` in `web/`. **Critical**: it reads `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_API_BASE` as `ARG`s and bakes them into the JS bundle. If the build env doesn't have them, the bundle ships with empty strings and the front-end will throw `[supabase] Missing VITE_SUPABASE_URL` and white-screen on first load. **Always build with `docker compose build`**, never bare `docker build` — only `docker compose build` reads the `args:` block from `docker-compose.yml` and forwards env from `.env`.
+- `docker-compose.yml` — exposes `127.0.0.1:3080:80`, runs healthcheck against `/health`, mounts named volumes for Playwright cache and per-tenant scratch data, reads runtime env from `.env`.
+- `deploy/nginx.conf` — in-container nginx (port 80, splits `/`/`/api`/`/health`).
+- `deploy/nginx-host.conf` — host-side nginx (port 80→443 redirect; 443 with self-signed → 127.0.0.1:3080).
+- `deploy/start.sh` — container entrypoint: launches Xvfb, then backend, then nginx in foreground.
+
+### Scripts
+- `deploy/deploy-source-build.sh` — **the one we use**. Tars source locally, scps it + `docker-compose.yml` + `.env` + nginx host conf to the server, runs `docker compose build` on the server (so `VITE_*` envs are properly forwarded), then `docker compose up -d --force-recreate`, reloads host nginx, runs healthcheck. Self-checks for local `.env` first.
+- `deploy/deploy.sh` — older variant that builds locally and ships the image as a tarball. Slow on Apple Silicon (cross-arch). Kept for reference.
+- `deploy/deploy-registry.sh` — push to a docker registry then pull on server. Requires `IMAGE_REPO` env. Useful when you have an Aliyun ACR set up.
+
+### One-time server prep (already done on 47.236.98.146)
 ```bash
-cd backend && npm run dev     # tsx watch on http://localhost:8787
-cd backend && npm run build   # tsc to backend/dist/
+# install docker if needed
+sudo dnf install -y docker
+sudo systemctl enable --now docker
+# host nginx + self-signed cert at /etc/nginx/ssl/selfsigned.{crt,key}
+# /etc/nginx/conf.d/appointment-scheduler.conf  ← from deploy/nginx-host.conf
 ```
 
-### Running Together
-
+### Redeploy
 ```bash
-# Terminal 1
-cd backend && npm run dev
-
-# Terminal 2
-cd frontend && npm run dev
+# from your laptop
+cd appointment_scheduler
+# make sure .env exists at repo root (cp backend/.env)
+./deploy/deploy-source-build.sh
+# → ~3-5 min total. Health check at the end. Browse to https://47.236.98.146.
 ```
 
-Frontend `api.js` sends all `/api/*` requests to `http://localhost:8787`.
+### Rollback
+We tag every deploy's previous image as `appointment-scheduler:backup-YYYY-MM-DD`. To roll back:
+```bash
+ssh root@47.236.98.146
+cd /opt/appointment-scheduler
+docker tag appointment-scheduler:backup-2026-06-01 appointment-scheduler:latest
+docker compose up -d --force-recreate
+```
+
+### Common deploy failures we've actually hit
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Cannot find module '@supabase/supabase-js'` during backend tsc | Dep declared at repo root (npm workspaces hoisted), not in `backend/package.json`; Dockerfile only `COPY backend/` | Always declare backend deps inside `backend/package.json`, even if hoisted at root |
+| `Node.js 20 detected without native WebSocket support` (supabase realtime) | `node:20-bookworm` base | Use `node:22-bookworm` (already done) |
+| White screen + console: `[supabase] Missing VITE_SUPABASE_URL` | `docker build` instead of `docker compose build` (build args dropped) | Use `docker compose build` only |
+| `405 METHOD_NOT_ALLOWED` on every `/api/*` from the web | Old `server.ts` is running (no Supabase routes) | Restart container with the new image; check `docker ps` shows the right image hash |
+| `env file /opt/appointment-scheduler/.env not found` | `deploy.sh` didn't scp `.env` (the OG `deploy.sh` skipped it; fixed in `deploy-source-build.sh`) | Ensure `.env` is at repo root before deploy |
 
 ---
 
-## Frontend Routes (14 pages)
+## 10. Secrets
 
-| Path | Component | Description |
-|------|-----------|-------------|
-| `/` | `Onboarding` | 3-step welcome + WhatsApp connect flow (first-time only) |
-| `/home` | `Home` | Tours list — greeting, "Start a new tour" entry, tour cards with progress |
-| `/schedule` | `Schedule` | Calendar month view + day detail for confirmed viewings |
-| `/search` | `Search` | Conversational AI search — voice/typed/URL input, tag engine, listing results |
-| `/tour` | `TourDetail` | Tour detail — listings grouped by area, scheduling preferences bottom sheet |
-| `/chat` | `Chat` | Thread view — message bubbles, AI/human ownership toggle, take-over button |
-| `/decision` | `DecisionCard` | Exception decision card — 3-choice resolution (squeeze in / repropose / drop) |
-| `/itinerary` | `Itinerary` | Route map + timeline + WhatsApp share button |
-| `/buyer` | `BuyerView` | Agent-side share flow — select client, share shortlist link via WhatsApp |
-| `/client` | `Client` | Client book list with search |
-| `/client/new` | `ClientDetail` | New client form |
-| `/client/:clientId` | `ClientDetail` | Client detail/edit with linked tour card |
-| `/notifications` | `Notifications` | Inbox — prioritized notifications and decision cards |
-| `/settings` | `Settings` | AI tone, rhythm, automation toggles, WhatsApp status, profile |
+All secrets live in `backend/.env` and `web/.env.local`. Both are gitignored (verified by `git check-ignore`). Repo root also has a `.env` used by docker-compose (mirror of `backend/.env`); also gitignored.
 
-All pages render inside a `PhoneFrame` component (iOS device simulator). UI uses iOS-style components: `IOSStatusBar`, `IOSNavBar`, `IOSKeyboard`, `IOSList`, `IOSGlassPill`.
+| Name | Where | Purpose |
+|---|---|---|
+| `SUPABASE_URL` | backend, root | Backend admin client + JWT verifier |
+| `SUPABASE_ANON_KEY` | backend, web, root | Frontend & backend (user-scoped) calls |
+| `SUPABASE_SERVICE_ROLE_KEY` | backend, root | Backend-only: pg_listings_archive writes, admin migrations. **NEVER ship to frontend** — Dockerfile only forwards `VITE_SUPABASE_ANON_KEY`, never service_role |
+| `OPENAI_API_KEY` | backend, root | LLM listing parser |
+| `ONEMAP_EMAIL` + `ONEMAP_PASSWORD` | backend, root | OneMap (geocoding). Token is auto-fetched and refreshed |
+| `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | web | Built into the bundle by Vite |
+| `VITE_API_BASE` | web (build arg in prod) | Defaults to `/api` (same origin) |
 
-Bottom navigation: `Tours | Schedule | [+] | Client | Inbox`
-
-### Frontend State Management
-
-`ButlerContext` (React Context + `useReducer`-style) is the single global store. It fetches all data on mount via `refreshApp()`:
-
-- `tours` / `tourCards` — all tours with summary adapters
-- `activeTour` / `activeTourId` — currently selected tour
-- `clients` — client book
-- `inboxItems` — inbox notifications
-- `profile` / `settings` — user profile and AI settings
-- `threadsByTour` / `activeThreadId` — chat threads per tour
-- `exceptionsByTour` — exceptions per tour
-
-### Frontend Data Layer
-
-`lib/api.js` exports API clients:
-- `toursApi` — CRUD tours, listings, buyer availability, opposing availability, coordination events, threads, exceptions, itinerary, schedule generation
-- `clientsApi` — CRUD clients
-- `inboxApi` — list inbox, mark read
-- `settingsApi` — get/update profile and settings
-- `searchApi` — parse input, import link, search results
-
-`lib/adapters.js` transforms backend shapes into UI-friendly shapes (tour cards, threads, etc.).
+### Known historical leak (private repo, low impact)
+Git history on `origin/staging` of `daven009/butler` includes 4 commits authored by `shufangsong@tencent.com <p@ssword1987>` — the email field was misconfigured to be the real OneMap password. The repo is private so impact is bounded, but **the password should be rotated** when convenient. New commits use `songshufang1@gmail.com`.
 
 ---
 
-## Backend API Endpoints
+## 11. Branching
 
-Base URL: `http://localhost:8787`
+`daven009/butler` (parent repo) on GitHub:
+- `main`, `master` — abandoned old prototypes. Don't push there.
+- `staging` — Daven's old staging line. Currently 4 commits with the leaked-email author, content identical to the original Daven commits. Don't touch unless rewriting history.
+- `staging-supabase-integration` — **active**. Where this whole Supabase + extension auth + Aliyun deploy work lives. Push here.
 
-### Health
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-
-### Tours
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/tours` | List tour summaries |
-| POST | `/api/tours` | Create tour |
-| GET | `/api/tours/:id` | Get tour detail |
-| PATCH | `/api/tours/:id` | Update tour basics |
-| POST | `/api/tours/:id/generate-schedule` | Generate schedule (Scheduler v1) |
-
-### Listings
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/tours/:id/listings` | Add listing to tour |
-| PATCH | `/api/tours/:id/listings/:listingId` | Update listing |
-| DELETE | `/api/tours/:id/listings/:listingId` | Remove listing |
-| PATCH | `/api/tours/:id/listings/:listingId/status` | Update listing coordination status |
-
-### Buyer Availability
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/tours/:id/buyer-availability` | List buyer availability |
-| POST | `/api/tours/:id/buyer-availability` | Add availability slot |
-| PUT | `/api/tours/:id/buyer-availability` | Replace all availability |
-| PATCH | `/api/tours/:id/buyer-availability/:availabilityId` | Update slot |
-| DELETE | `/api/tours/:id/buyer-availability/:availabilityId` | Delete slot |
-
-### Opposing Agent Availability
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/tours/:id/listings/:listingId/opposing-availability` | List |
-| POST | `/api/tours/:id/listings/:listingId/opposing-availability` | Add |
-| PUT | `/api/tours/:id/listings/:listingId/opposing-availability` | Replace all (scoped to listing) |
-| PATCH | `/api/tours/:id/listings/:listingId/opposing-availability/:availabilityId` | Update |
-| DELETE | `/api/tours/:id/listings/:listingId/opposing-availability/:availabilityId` | Delete |
-
-### Coordination Events
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/tours/:id/listings/:listingId/coordination-events` | List events |
-| POST | `/api/tours/:id/listings/:listingId/coordination-events` | Create event |
-| PATCH | `/api/tours/:id/listings/:listingId/coordination-events/:eventId` | Update event |
-| DELETE | `/api/tours/:id/listings/:listingId/coordination-events/:eventId` | Delete event |
-
-### Threads (Chat)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/tours/:id/threads` | List threads for tour |
-| GET | `/api/tours/:id/threads/:threadId` | Get thread |
-| GET | `/api/tours/:id/threads/:threadId/messages` | Get messages |
-| POST | `/api/tours/:id/threads/:threadId/messages` | Send message |
-| PATCH | `/api/tours/:id/threads/:threadId/ownership` | Toggle AI/HUMAN ownership |
-
-### Exceptions (Decision Cards)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/tours/:id/exceptions` | List exceptions |
-| GET | `/api/tours/:id/exceptions/:exceptionId` | Get exception |
-| POST | `/api/tours/:id/exceptions/:exceptionId/resolve` | Resolve (SQUEEZE_IN / REPROPOSE / DROP_LISTING) |
-
-### Calendar
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/calendar?month=YYYY-MM` | Month view |
-| GET | `/api/calendar/day?date=YYYY-MM-DD` | Day view |
-
-### Itinerary
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/tours/:id/itinerary` | Get itinerary |
-| POST | `/api/tours/:id/itinerary/share` | Share via WhatsApp (stub) |
-| POST | `/api/tours/:id/itinerary/export` | Export PDF (stub) |
-
-### Search
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/search/parse` | Parse text input into tags (regex, not AI) |
-| POST | `/api/search/import-link` | Import PropertyGuru link (stub) |
-| POST | `/api/search/results` | Search listing catalog by tags |
-
-### Clients
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/clients` | List clients |
-| POST | `/api/clients` | Create client |
-| GET | `/api/clients/:clientId` | Get client |
-| PATCH | `/api/clients/:clientId` | Update client |
-| DELETE | `/api/clients/:clientId` | Delete client |
-
-### Settings & Profile
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/me` | Get profile |
-| PATCH | `/api/me` | Update profile |
-| GET | `/api/settings` | Get settings |
-| PATCH | `/api/settings` | Update settings |
-
-### Inbox
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/inbox` | List inbox items |
-| PATCH | `/api/inbox/:itemId/read` | Mark read |
+`daven009/butler-web` (Daven's web repo, embedded as `web/.git`): READ-ONLY for us. Never push.
 
 ---
 
-## Domain Model
-
-Defined in `backend/src/lib/types.ts`.
-
-### Core Types
-
-- `Tour` — the top-level plan container. Owns listings, buyer availability, opposing availability, schedule items, exception cards, coordination events.
-- `TourListing` — one property in a tour. Tracks opposing agent info, coordination status.
-- `BuyerAvailability` — buyer's available time windows (date + start/end time + preference).
-- `OpposingAgentAvailability` — opposing agent's available slots per listing.
-- `CoordinationEvent` — audit log entry for each coordination step (messages, status changes, notes).
-- `ScheduleItem` — proposed itinerary entry with start/end times.
-- `ExceptionCard` — a listing that needs human decision.
-- `Agent` — the agent using the platform.
-- `ClientProfile` — buyer/tenant profile data.
-
-### Tour Statuses
-
-```ts
-type TourStatus =
-  | 'DRAFT'
-  | 'PLANNING'
-  | 'COORDINATING'
-  | 'READY_TO_SCHEDULE'
-  | 'CONFIRMED'
-  | 'COMPLETED'
-  | 'CANCELLED';
-```
-
-### Tour Listing Statuses
-
-```ts
-type TourListingStatus =
-  | 'NOT_CONTACTED'
-  | 'WAITING_REPLY'
-  | 'AVAILABLE_SLOTS_RECEIVED'
-  | 'UNAVAILABLE'
-  | 'NEEDS_REVIEW'
-  | 'SCHEDULED'
-  | 'CANCELLED';
-```
-
-### Thread Ownership
-
-```ts
-type ThreadOwnership = 'AI' | 'HUMAN';
-```
-
-Each opposing-agent conversation thread has an `ownership` field. When `AI`, the system handles replies automatically. When `HUMAN`, the agent manages the conversation directly via dashboard. The agent can toggle ownership at any time.
-
----
-
-## Persistence
-
-**Local JSON file storage** via `backend/src/lib/store.ts`.
-
-Runtime files in `backend/data/` (gitignored):
-
-| File | Contents |
-|------|----------|
-| `tours.json` | All tours, listings, availability, schedule, exceptions, coordination events |
-| `butler.json` | Thread state, inbox items, share records |
-| `clients.json` | Client book |
-| `settings.json` | User profile, AI settings |
-
-`store.ts` provides `readJsonFile()` and `writeJsonFile()` with lazy initialization from seed data.
-
-**Limitations:**
-- Not safe for concurrent writes
-- No transaction layer
-- IDs generated with `crypto.randomUUID()` + short prefixes
-- Must be replaced with Postgres before production
-
----
-
-## Scheduling Module
-
-`backend/src/lib/scheduling/scheduler.ts` — deterministic greedy Scheduler v1.
-
-Behavior:
-- Only `AVAILABLE_SLOTS_RECEIVED` listings are schedulable
-- Candidate windows = overlap of buyer availability and opposing agent slots
-- Start times rounded up to 15-minute increments
-- Default viewing duration: 30 minutes
-- Default travel buffer: 15 minutes (different address), 0 minutes (same address)
-- First scheduled item per day gets 0 travel buffer
-- Items sorted by start time → end time → title → id
-- Once scheduled, a listing is not scheduled again
-- Output items have status `PROPOSED`
-
-Time handling: Singapore local time (`+08:00`). No external date library.
-
----
-
-## What EXISTS But Is NOT Real
-
-These features exist in the UI and/or data model but have NO actual implementation behind them:
-
-| Feature | Current State | What's Missing |
-|---------|--------------|----------------|
-| WhatsApp messaging | Data model has `WHATSAPP` source enum, UI shows connect status | No WhatsApp Cloud API integration, no webhook, no token exchange |
-| AI chat responses | Thread UI shows AI/HUMAN toggle, demo messages | No LLM integration, no response generation |
-| Search AI parsing | Tags are generated by regex pattern matching | No LLM, no PropertyGuru API, no Google Maps |
-| Voice transcription | Microphone icon in search UI | No Whisper/STT integration |
-| Itinerary sharing | "Share via WhatsApp" button, share records | Only records the share event, doesn't actually send |
-| PDF export | Export button | Returns stub response |
-| AI settings (tone, disclosure, etc.) | Settings UI with toggles | Settings are stored but consumed by nothing |
-
----
-
-## What Needs to Be Built — Development Roadmap
-
-### Assumptions
-
-- We can obtain the user's WhatsApp Business account OAuth token (via Embedded Signup or manual configuration — not our concern now).
-- Given a valid token, we can call WhatsApp Cloud API to send/receive messages on the agent's behalf.
-- LLM integration will use Claude or GPT via API.
-
-### Phase 1: WhatsApp Message Pipeline (Foundation)
-
-**Goal:** Given a WhatsApp Business OAuth token, the backend can send and receive WhatsApp messages.
-
-```
-1.1  WhatsApp service module
-     - POST /send-message: send text or template message via Cloud API
-     - Webhook handler: receive inbound messages, status updates
-     - Token storage: store per-agent OAuth token (env var for now, DB later)
-     - Message queuing: simple in-memory queue with retry
-
-1.2  Wire WhatsApp to coordination events
-     - When a coordination event is created with source=WHATSAPP,
-       actually send the message via Cloud API
-     - When a webhook delivers an inbound message,
-       create a coordination event + update thread
-
-1.3  Thread ↔ WhatsApp mapping
-     - Each thread tracks the opposing agent's WhatsApp number
-     - Inbound messages are routed to the correct thread by phone number
-     - Thread messages page shows real WhatsApp messages (not just seed data)
-```
-
-Deliverable: You can start the backend, configure a WhatsApp Business token, and send/receive real WhatsApp messages that appear in the Chat UI.
-
-### Phase 2: AI Coordination Agent (Core Product)
-
-**Goal:** AI autonomously runs the multi-step coordination dialogue per the product spec.
-
-```
-2.1  LLM integration module
-     - Wrapper around Claude/GPT API
-     - Prompt templates for each coordination step
-     - Structured output parsing (availability slots, yes/no, intent classification)
-
-2.2  Coordination state machine (per listing)
-     - States: NOT_CONTACTED → CONFIRMING_AVAILABILITY → INTRODUCING_PROFILE
-       → COLLECTING_SLOTS → NEGOTIATING → CONFIRMED / NEEDS_REVIEW
-     - Each state transition triggers the appropriate WhatsApp message
-     - Inbound messages advance the state machine
-     - Unrecognized replies → fallback to NEEDS_REVIEW + decision card
-
-2.3  Reply parsing
-     - LLM parses natural language replies ("can tmr 2pm", "saturday morning lah")
-     - Extracts: availability slots, yes/no, questions, unclear intent
-     - Low-confidence parses → ask for clarification or escalate
-
-2.4  Timer-based follow-ups
-     - 24h no reply → send follow-up message
-     - 48h no reply → stop AI, create exception card
-     - Configurable per-agent via settings
-
-2.5  Human takeover
-     - When agent toggles thread to HUMAN, AI stops sending
-     - Agent sends messages via dashboard, they go out as WhatsApp
-     - Agent can toggle back to AI
-```
-
-Deliverable: "Start AI Schedule" button on Tour Detail triggers real AI coordination. AI sends WhatsApp messages, parses replies, advances state, creates exceptions when stuck.
-
-### Phase 3: Global Schedule Optimization
-
-**Goal:** Once availability is collected, produce an optimized itinerary.
-
-```
-3.1  Scheduler v2
-     - Input: buyer availability + all opposing agent slots + listing addresses
-     - Geographic clustering (same-area groupings)
-     - Global optimization: maximize listings-per-block, minimize travel
-     - Travel time: Google Maps Distance Matrix API (real driving times)
-     - Output: proposed schedule + unscheduled listings with reasons
-
-3.2  Precise time confirmation
-     - After optimization, AI sends precise time proposals to each opposing agent
-     - Opposing agent confirms or counter-proposes
-     - Counter-proposals within same block → auto-adjust
-     - Counter-proposals crossing blocks → exception card
-
-3.3  Buyer confirmation flow
-     - After all opposing agents confirmed, generate buyer link
-     - Buyer sees optimized itinerary overview, selects preferred option
-     - Buyer confirmation locks the schedule
-```
-
-### Phase 4: Search & Discovery
-
-**Goal:** Replace static search with real property data.
-
-```
-4.1  PropertyGuru integration
-     - URL parsing: extract query params from PG URLs
-     - API scraping: fetch listing data
-     - Listing card enrichment with real property data
-
-4.2  AI-powered search
-     - LLM converts natural language → structured search params + semantic tags
-     - Tag engine: structured tags (price, rooms, area) + semantic tags (pet-friendly, modern reno)
-     - Two-layer pipeline: structured filter → AI semantic analysis
-
-4.3  MOE school data
-     - School coordinates database
-     - 1km / 2km enrollment circle calculation
-
-4.4  Google Maps enrichment
-     - Commute time to specified workplace
-     - Walking time to nearest MRT
-```
-
-### Phase 5: External-Facing Links (No-Login Pages)
-
-**Goal:** Buyer and opposing agent can interact via shared links without accounts.
-
-```
-5.1  Buyer shortlist confirmation page
-     - No-login H5 page
-     - View shortlisted listings, mark interested ones
-     - Select available time slots
-     - Submit → data flows into tour
-
-5.2  Opposing agent time selection page
-     - No-login H5 page
-     - View available time slots for the listing
-     - Select multiple slots
-     - Submit → updates opposing agent availability
-
-5.3  Link lifecycle management
-     - Links are active until agent triggers coordination
-     - After coordination starts, links become read-only
-     - Agent can re-open links by pausing coordination
-```
-
-### Phase 6: Production Readiness
-
-```
-6.1  Database migration: JSON → Postgres (Prisma or Drizzle)
-6.2  Authentication: agent login
-6.3  Multi-tenancy: data isolation per agent
-6.4  WhatsApp Embedded Signup: let agents connect their own WA Business accounts
-6.5  Deployment configuration
-6.6  Error monitoring and logging
-```
-
----
-
-## Key Technical Decisions
-
-### Why Vite + Express (not Next.js)?
-
-The prototype was rebuilt from a Next.js pages-router app into Vite SPA + Express because:
-- Cleaner separation between UI prototype and API
-- Faster frontend dev iteration (Vite HMR)
-- Backend can be deployed independently
-- No SSR needed for a dashboard app
-
-### Why JSX (not TypeScript) on Frontend?
-
-The frontend is a rapid UI prototype. TypeScript will be added when the prototype stabilizes and real data flows are connected.
-
-### Why JSON File Storage?
-
-Fastest way to iterate on data model during prototyping. Will be replaced with Postgres before multi-user or production use.
-
----
-
-## Instructions for Future Agents
-
-1. **Read this document first** before making substantial changes.
-2. **The architecture is Vite SPA + Express API.** Do not assume Next.js.
-3. **Frontend is a high-fidelity prototype.** All 14 screens have polished UI, but many features are simulated with mock data.
-4. **Backend API is real.** All endpoints listed above work and are tested.
-5. **WhatsApp and AI are the critical path.** Phase 1 and Phase 2 are the highest priority.
-6. **Do not add new UI screens** unless they directly support Phases 1-3.
-7. **Keep business types explicit** — update `backend/src/lib/types.ts` first when changing domain concepts.
-8. **Update this file** whenever you make significant implementation changes.
-9. **The product spec** (`功能规格_智能搜房与看房行程规划.md`) defines the full product vision. This document defines what's built and what to build next.
-10. **`frontend.backup-*` directories** are archived old code. Do not reference or modify them.
+## 12. Things future agents should know before changing stuff
+
+1. **Don't `npm install` at root expecting it to install web's deps**. Web is a separate project. Always `cd web && npm install` for it.
+2. **Don't put runtime backend deps only at the repo root**. Even if npm workspaces hoists them, docker only copies `backend/` and re-installs from `backend/package.json`. They must be declared there.
+3. **Don't bare-`docker build`**. Use `docker compose build`. The build args matter (frontend env baking).
+4. **Don't push to `web/.git`'s remote** — that's Daven's repo. Push to the parent repo only.
+5. **Don't commit anything from `_archive_2026-06-01/`** or `appointment-scheduler.tar.gz`. They're recovery dumps, kept locally. The `.gitignore` already covers them.
+6. **Don't lower the Node version below 22**. supabase-js v2 realtime requires native WebSocket.
+7. **When changing the Supabase schema**, edit `backend/supabase/schema.sql` and apply it manually in Supabase SQL editor. There is no migration tool yet.
+8. **When adding a new `/api/*` route**, it inherits `requireUser` automatically. If you need a public route, declare it BEFORE `app.use('/api', requireUser)` (e.g. `/api/share/:token` is declared above).
+9. **When changing the extension's externally_connectable origins**, also rebump `manifest.json` version, repackage the zip, and (if published) re-upload to the Web Store.
+10. **Update `change_log.md`** at the end of any task that satisfies (1)-(9).

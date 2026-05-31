@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Butler PG Importer",
+  "version": "1.0.2",
+  "description": "One-click import PropertyGuru listings (with agent contact) into your Butler appointment scheduler.",
+  "author": "Butler",
+  "homepage_url": "https://butler.example.com",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": ["storage", "activeTab", "tabs"],
+  "host_permissions": [
+    "https://www.propertyguru.com.sg/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://47.236.98.146/*"
+  ],
+  "externally_connectable": {
+    "matches": [
+      "http://localhost/*",
+      "http://localhost:5173/*",
+      "http://127.0.0.1/*",
+      "http://127.0.0.1:5173/*",
+      "https://47.236.98.146/*"
+    ]
+  },
+  "action": {
+    "default_title": "Import this PropertyGuru listing into Butler",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.propertyguru.com.sg/listing/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

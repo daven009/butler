@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Butler PG Importer</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>Butler PG Importer</h1>
+    <div class="row">
+      <label>Backend</label>
+      <input id="backendBase" type="text" placeholder="http://localhost:8787" />
+    </div>
+    <div class="row">
+      <label>Plan</label>
+      <select id="plan"></select>
+      <button id="reloadPlans" class="ghost" title="Reload plans">⟳</button>
+    </div>
+    <div class="row">
+      <label>Tour</label>
+      <select id="tour"></select>
+    </div>
+
+    <div class="opts">
+      <label class="check">
+        <input id="advanced" type="checkbox" />
+        <span>Advanced extract <em>(scroll, expand "See more", cycle photos)</em></span>
+      </label>
+      <label class="check sub">
+        <input id="revealContact" type="checkbox" disabled />
+        <span>Reveal contact (clicks WhatsApp/Call — <strong>notifies the listing agent</strong>)</span>
+      </label>
+    </div>
+
+    <button id="extract" class="primary">Extract this PG page</button>
+
+    <pre id="preview" hidden></pre>
+
+    <button id="import" class="primary" disabled>Import to selected Tour</button>
+
+    <div id="status" class="status"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
