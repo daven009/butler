@@ -88,6 +88,20 @@ export async function storeTokenInExtension(token: string): Promise<boolean> {
   }
 }
 
+/**
+ * Tell the extension to drop its cached token. Call on sign-out so the next
+ * user on the same browser can't accidentally write under the previous
+ * user's identity.
+ */
+export async function clearTokenInExtension(): Promise<boolean> {
+  try {
+    await send({ type: 'CLEAR_TOKEN' })
+    return true
+  } catch {
+    return false
+  }
+}
+
 export async function importViaTab(args: {
   tourId: string
   url: string

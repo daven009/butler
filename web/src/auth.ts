@@ -8,6 +8,7 @@
 
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './supabaseClient'
+import { clearTokenInExtension } from './extensionBridge'
 
 export interface ButlerUser {
   /** auth.users.id — uuid */
@@ -53,6 +54,10 @@ export async function getCurrentUser(): Promise<ButlerUser | null> {
 }
 
 export async function signOut(): Promise<void> {
+  // Best-effort: clear the JWT cached inside the Chrome extension so the
+  // next user on this browser can't accidentally write under the previous
+  // user's identity. Ignore failures — the extension may not be installed.
+  await clearTokenInExtension().catch(() => false)
   await supabase.auth.signOut()
 }
 
