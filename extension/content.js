@@ -638,7 +638,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // Auto-close the tab after a short delay so the user sees the success state.
     await SLEEP(2000);
     try {
-      await chromeSendMessage({ type: 'CLOSE_SELF_TAB' });
+      // Pass taskId so background.js can refocus the Butler tab that kicked
+      // this off (looked up via stashTaskOrigin) BEFORE removing this PG tab.
+      // Without this, Chrome would just auto-activate whatever tab happened
+      // to be next, which usually isn't Butler.
+      await chromeSendMessage({ type: 'CLOSE_SELF_TAB', taskId });
     } catch (_) {
       // ignore — popup-blocked or no permission, fall back to staying open
     }

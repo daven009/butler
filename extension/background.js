@@ -160,6 +160,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
       if (msg.type === 'CLOSE_SELF_TAB') {
+        // Before closing the PG tab, refocus the Butler tab that started this
+        // import (so the user sees their workspace, not whatever tab Chrome
+        // happens to pick when the active tab dies). The taskId was attached
+        // to the URL by IMPORT_VIA_TAB and propagated through content.js.
+        try {
+          const taskId = msg.taskId || extractTaskIdFromTabUrl(sender?.tab?.url);
+          const origin = taskId ? await getTaskOrigin(taskId) : null;
+          if (origin?.butlerTabId) {
+            try {
+              await chrome.tabs.update(origin.butlerTabId, { active: true });
+              if (origin.butlerWindowId != null) {
+                await chrome.windows.update(origin.butlerWindowId, { focused: true });
+              }
+            } catch (_) {
+              // Butler tab may have been closed by the user; nothing to focus.
+            }
+          }
+        } catch (_) {}
         if (sender?.tab?.id) {
           try { await chrome.tabs.remove(sender.tab.id); } catch (_) {}
         }
@@ -196,7 +214,21 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: false, error: 'token (string) is required' });
           return;
         }
-        await chrome.storage.local.set({ butlerToken: msg.token });
+        const patch = { butlerToken: msg.token };
+        // The web app also tells us *which Butler instance* it came from
+        // (e.g. https://47.236.98.146 in prod, http://localhost:5173 in dev).
+        // Remember it so:
+        //   1. The popup's "Open Butler" button can target the right host.
+        //   2. backendBase auto-syncs to the same host (web origin → API host
+        //      via deriveBackendBaseFromWebOrigin), avoiding the gotcha
+        //      where the user logged in on prod but the popup still talked
+        //      to localhost:8787.
+        if (typeof msg.webOrigin === 'string' && msg.webOrigin) {
+          patch.butlerWebOrigin = msg.webOrigin;
+          const derived = deriveBackendBaseFromWebOrigin(msg.webOrigin);
+          if (derived) patch.backendBase = derived;
+        }
+        await chrome.storage.local.set(patch);
         sendResponse({ ok: true });
         return;
       }
@@ -214,6 +246,15 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
         const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
         const fullUrl = appendButlerParams(url, tourId, taskId, reveal);
         const tab = await chrome.tabs.create({ url: fullUrl, active: true });
+        // Remember which Butler tab started this import so we can refocus it
+        // when the PG tab closes (auto-mode finish handler in content.js calls
+        // CLOSE_SELF_TAB; we use this stash to bring Butler back to the front).
+        if (_sender?.tab?.id != null) {
+          await stashTaskOrigin(taskId, {
+            butlerTabId: _sender.tab.id,
+            butlerWindowId: _sender.tab.windowId,
+          });
+        }
         sendResponse({ ok: true, data: { taskId, tabId: tab.id } });
         return;
       }
@@ -273,4 +314,58 @@ async function getStashedTaskResult(taskId) {
   const key = `task:${taskId}`;
   const out = await chrome.storage.local.get(key);
   return out[key] || null;
+}
+/**
+ * Stash which Butler tab kicked off a given taskId, so when the PG tab
+ * finishes auto-import and asks to be closed, we can refocus that Butler
+ * tab (instead of letting Chrome auto-pick whatever neighbouring tab was
+ * next, which often isn't Butler).
+ */
+async function stashTaskOrigin(taskId, value) {
+  if (!taskId) return;
+  const key = `taskOrigin:${taskId}`;
+  await chrome.storage.local.set({ [key]: { ...value, savedAt: Date.now() } });
+  setTimeout(() => chrome.storage.local.remove(key).catch(() => {}), 60 * 60 * 1000);
+}
+
+async function getTaskOrigin(taskId) {
+  if (!taskId) return null;
+  const key = `taskOrigin:${taskId}`;
+  const out = await chrome.storage.local.get(key);
+  return out[key] || null;
+}
+
+/** Best-effort: pull ?taskId=... out of the PG tab's URL when content.js
+ *  forgets to pass it explicitly in the CLOSE_SELF_TAB message. */
+function extractTaskIdFromTabUrl(url) {
+  if (typeof url !== 'string') return null;
+  try { return new URL(url).searchParams.get('taskId'); } catch { return null; }
+}
+
+/**
+ * Map a Butler web origin → the backend base the extension should call.
+ *
+ *   https://47.236.98.146           → https://47.236.98.146       (same host, /api goes through host nginx)
+ *   http://localhost:5173           → http://localhost:8787       (dev: vite at 5173, backend at 8787)
+ *   http://127.0.0.1:5173           → http://127.0.0.1:8787
+ *   anything else (incl. https://butler.example.com once we have a domain)
+ *                                   → return as-is (assume reverse-proxy is doing /api routing)
+ *
+ * Returns null if the origin can't be parsed (in which case we leave the
+ * existing backendBase alone — never wipe a user's manual override on a
+ * malformed input).
+ */
+function deriveBackendBaseFromWebOrigin(origin) {
+  try {
+    const u = new URL(origin);
+    // Vite dev server on 5173 → tsx backend on 8787. Common dev pairing.
+    if ((u.hostname === 'localhost' || u.hostname === '127.0.0.1') && u.port === '5173') {
+      return `${u.protocol}//${u.hostname}:8787`;
+    }
+    // Anything else: web and api share the same origin (production reverse
+    // proxy splits / vs /api).
+    return u.origin;
+  } catch {
+    return null;
+  }
 }

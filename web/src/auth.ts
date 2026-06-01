@@ -8,7 +8,7 @@
 
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './supabaseClient'
-import { clearTokenInExtension } from './extensionBridge'
+import { clearTokenInExtension, storeTokenInExtension } from './extensionBridge'
 
 export interface ButlerUser {
   /** auth.users.id — uuid */
@@ -80,10 +80,31 @@ export async function initAuth(
   const { data: { session } } = await supabase.auth.getSession()
   _cachedToken = session?.access_token ?? null
   onChange(session?.user ? toButlerUser(session.user) : null)
+  // On first boot, if we already have a session, push the JWT into the
+  // extension straight away. The App.tsx-level effect will also do this when
+  // the user object materialises, but doing it here too means a fresh tab on
+  // a returning user has the extension primed before any UI even mounts.
+  if (session?.access_token) {
+    void storeTokenInExtension(session.access_token).catch(() => {})
+  }
 
-  const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+  const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
     _cachedToken = sess?.access_token ?? null
     onChange(sess?.user ? toButlerUser(sess.user) : null)
+    // Keep the extension's cached JWT in lockstep with the web SDK:
+    //   SIGNED_IN          → push fresh token
+    //   TOKEN_REFRESHED    → push the refreshed (not-yet-expired) token,
+    //                        otherwise extension calls 401 once the old one
+    //                        expires (default Supabase TTL is 1h)
+    //   SIGNED_OUT / USER_DELETED → clear it (signOut() also does this, but
+    //                        catching the event covers cases where a tab
+    //                        was signed out from another tab via the
+    //                        cross-tab BroadcastChannel)
+    if (sess?.access_token && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION' || event === 'USER_UPDATED')) {
+      void storeTokenInExtension(sess.access_token).catch(() => {})
+    } else if (event === 'SIGNED_OUT') {
+      void clearTokenInExtension().catch(() => {})
+    }
   })
 
   return () => sub.subscription.unsubscribe()

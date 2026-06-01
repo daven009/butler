@@ -8,6 +8,30 @@
 
 ---
 
+## 2026-06-01 (later same day) — Extension v1.0.3 + auto refocus + nginx no-cache + token lifecycle
+
+A follow-up cluster of UX/auth fixes landed after smoke-testing the morning's Aliyun deploy:
+
+- **`deploy/nginx.conf`** — `index.html` (and the SPA fallback) now sends `Cache-Control: no-store, no-cache, must-revalidate`. Hashed `/assets/*` keep their 1-year `immutable` cache. Returning users from the May-15 deploy were still seeing the old "Bulter Web" homepage because the browser had cached the old `index.html` (which referenced a stale bundle hash); this fixes it for all future deploys. Hot-reloaded into the running container; baked into the Dockerfile for the next build.
+- **`auth.ts`** — `initAuth()` now subscribes to all Supabase auth events that change the access token (`SIGNED_IN` / `INITIAL_SESSION` / `TOKEN_REFRESHED` / `USER_UPDATED`) and calls `storeTokenInExtension(...)` automatically. On `SIGNED_OUT` it calls `clearTokenInExtension()`. Earlier code only updated the in-memory `_cachedToken` and never told the extension about refresh events, so after ~1h the extension would 401 silently.
+- **`extensionBridge.ts`** — added `pingExtensionDetailed()` returning `{installed, version, tokenAware, hasToken}` so the web app can distinguish "not installed" from "installed but old version (v1.0.1)" from "installed and signed in". Added `clearTokenInExtension()`. `storeTokenInExtension(token)` now also passes `webOrigin = window.location.origin` so the extension knows which Butler instance the user is on.
+- **`extension/background.js`** v1.0.3 changes:
+  - **Auto refocus Butler tab** when an "Import via tab" PG tab finishes. Previously content.js called `CLOSE_SELF_TAB` and the browser auto-activated whichever tab happened to be next (often not Butler). Now `IMPORT_VIA_TAB` stashes `{butlerTabId, butlerWindowId}` keyed by `taskId`; `CLOSE_SELF_TAB` reads it back and `chrome.tabs.update(butlerTabId, {active:true}) + chrome.windows.update(butlerWindowId, {focused:true})` BEFORE closing the PG tab.
+  - **`STORE_TOKEN`** now persists `{butlerToken, butlerWebOrigin, backendBase}` together. `backendBase` auto-syncs from web origin via `deriveBackendBaseFromWebOrigin` (e.g. `https://47.236.98.146` → same; `http://localhost:5173` → `http://localhost:8787`). Solves the gotcha where the user logged in on prod but the popup still talked to localhost:8787.
+- **`extension/content.js`** — `CLOSE_SELF_TAB` now passes `taskId` so background can look up the Butler tab to refocus.
+- **`extension/popup.{html,js,css}`** — added auth UX:
+  - "Sign in to Butler" banner appears when no JWT cached. Button opens the stored `butlerWebOrigin` (or `https://47.236.98.146` as default). Plan/Tour selectors are disabled while unauthenticated. Local DOM extraction (`Extract this PG page`) still works without auth, just the import-to-backend is gated.
+  - When signed in, a green identity strip shows the active Butler origin so an agent can spot if they're on the wrong instance.
+- **`extension/butler-pg-importer-1.0.3.zip`** — repackaged. **Not yet uploaded to Chrome Web Store** (still on 1.0.1). Reload unpacked from `extension/` to test.
+
+**Edge cases still on the backlog (Phase 2):**
+- `?butlerImport=...` deep-link clicked from outside the Butler flow when user isn't signed in (content.js auto-mode currently fails silently with a 401 toast; should detect no-token state and show a "sign in then retry" prompt with the deep link cached).
+- Browser detection — extension is Chrome-only; non-Chrome users should see a clean "use Chrome" message rather than dead silence.
+- `/api/me` endpoint + popup showing email/displayName (currently shows just the origin host, not the user identity).
+- Deep-link cache & resume flow when user signs in mid-import.
+
+---
+
 ## 2026-06-01 — Supabase auth + multi-tenant integration + first auth-enabled Aliyun deploy
 
 **What landed (one big day):**

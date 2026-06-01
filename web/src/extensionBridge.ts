@@ -62,13 +62,44 @@ function send<T = unknown>(message: unknown): Promise<T> {
   })
 }
 
-export async function pingExtension(): Promise<boolean> {
+export interface ExtensionPingResult {
+  /** True if Chrome was reachable AND the extension responded. */
+  installed: boolean
+  /** Manifest version string (e.g. "1.0.2"). Undefined when not installed. */
+  version?: string
+  /**
+   * True only when the extension is v1.0.2+ (PING returns hasToken).
+   * Older versions return undefined here, which lets the web app prompt the
+   * user to upgrade.
+   */
+  tokenAware: boolean
+  /** Whether the extension currently has a Butler JWT cached. */
+  hasToken: boolean
+}
+
+/**
+ * Probe the extension. Returns rich metadata so the web app can:
+ *   - show an "install" banner when not installed,
+ *   - show an "upgrade" banner when v1.0.1 (no STORE_TOKEN handler),
+ *   - decide whether it still needs to push the token (hasToken=false → push).
+ */
+export async function pingExtensionDetailed(): Promise<ExtensionPingResult> {
   try {
-    await send({ type: 'PING' })
-    return true
+    const data = await send<{ version?: string; hasToken?: boolean }>({ type: 'PING' })
+    return {
+      installed: true,
+      version: data?.version,
+      tokenAware: typeof data?.hasToken === 'boolean',
+      hasToken: !!data?.hasToken,
+    }
   } catch {
-    return false
+    return { installed: false, tokenAware: false, hasToken: false }
   }
+}
+
+/** Backwards-compatible boolean shim. Prefer pingExtensionDetailed in new code. */
+export async function pingExtension(): Promise<boolean> {
+  return (await pingExtensionDetailed()).installed
 }
 
 /**
@@ -76,12 +107,23 @@ export async function pingExtension(): Promise<boolean> {
  * that the extension's popup / content-script can include it as
  * `Authorization: Bearer <token>` when calling our backend.
  *
+ * Also pushes the current page origin (e.g. https://47.236.98.146) so the
+ * extension's popup can open the same Butler instance when prompting an
+ * unauthenticated user to sign in. This way an agent who's logged in on
+ * production never gets bounced to localhost (or vice-versa).
+ *
  * Resolves true when the extension acknowledged; false otherwise (extension
- * not installed / unreachable / pre-token-aware version).
+ * not installed / unreachable / pre-token-aware version 1.0.1).
  */
 export async function storeTokenInExtension(token: string): Promise<boolean> {
   try {
-    await send({ type: 'STORE_TOKEN', token })
+    let webOrigin: string | undefined
+    try {
+      webOrigin = window.location.origin
+    } catch {
+      // ignore — running outside a window
+    }
+    await send({ type: 'STORE_TOKEN', token, webOrigin })
     return true
   } catch {
     return false
