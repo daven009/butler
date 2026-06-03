@@ -345,11 +345,11 @@ function extractTaskIdFromTabUrl(url) {
 /**
  * Map a Butler web origin → the backend base the extension should call.
  *
- *   https://47.236.98.146           → https://47.236.98.146       (same host, /api goes through host nginx)
- *   http://localhost:5173           → http://localhost:8787       (dev: vite at 5173, backend at 8787)
+ *   https://app.hey-alfred.vip      → https://app.hey-alfred.vip   (prod, /api routed by nginx)
+ *   https://47.236.98.146           → https://47.236.98.146        (legacy IP, kept for old installs)
+ *   http://localhost:5173           → http://localhost:8787        (dev: vite at 5173, backend at 8787)
  *   http://127.0.0.1:5173           → http://127.0.0.1:8787
- *   anything else (incl. https://butler.example.com once we have a domain)
- *                                   → return as-is (assume reverse-proxy is doing /api routing)
+ *   anything else                   → return as-is (assume reverse-proxy is doing /api routing)
  *
  * Returns null if the origin can't be parsed (in which case we leave the
  * existing backendBase alone — never wipe a user's manual override on a

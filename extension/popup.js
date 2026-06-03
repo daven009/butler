@@ -29,7 +29,12 @@ const elIdentityHost = $('identityHost');
 // Default Butler URL when we've never been told otherwise (first install,
 // no STORE_TOKEN ever received). Production URL only — the popup intentionally
 // doesn't know about localhost so a normal user sees the right destination.
-const DEFAULT_BUTLER_URL = 'https://47.236.98.146';
+// 2026-06-01: switched from raw IP (https://47.236.98.146, self-signed cert)
+// to the real domain. Self-signed certs aren't trusted by the extension's
+// service worker network stack, which broke every fetch from popup/background
+// even when the page-context content script could reach the server. Real
+// Let's Encrypt cert on app.hey-alfred.vip resolves all of that.
+const DEFAULT_BUTLER_URL = 'https://app.hey-alfred.vip';
 
 let extracted = null;
 
@@ -57,6 +62,17 @@ async function getAuthState() {
   };
 }
 
+/**
+ * Wipe a stale token from storage. Called when the backend says 401, which
+ * means whatever JWT we cached has expired (Supabase default TTL: 1h) or the
+ * user signed out from another tab. After this, the popup re-renders the
+ * "Sign in to Butler" banner so the user has a clear next action instead of
+ * seeing a generic "Failed to load plans" error.
+ */
+async function clearStaleToken() {
+  await chrome.storage.local.remove('butlerToken');
+}
+
 function showAuthBanner(webOrigin) {
   elAuthBanner.hidden = false;
   elIdentityStrip.hidden = true;
@@ -66,7 +82,12 @@ function showAuthBanner(webOrigin) {
   elReload.disabled = true;
   elExtract.disabled = false; // local-only DOM extract still works without auth
   elImport.disabled = true;
-  setStatus(`Sign in at ${webOrigin || DEFAULT_BUTLER_URL} to enable Plan/Tour selection.`);
+  // Clear any stale dropdown content so the user doesn't see the previous
+  // session's plans/tours behind the banner.
+  elPlan.innerHTML = '';
+  elTour.innerHTML = '';
+  const target = webOrigin || DEFAULT_BUTLER_URL;
+  setStatus(`Click "Sign in to Butler" below — once you're logged in at ${target}, come back and reopen this popup.`);
 }
 
 function showSignedIn(webOrigin) {
@@ -121,14 +142,18 @@ async function loadPlans() {
     setStatus('');
   } catch (e) {
     // 401 here is the user's main signal something's wrong — surface it
-    // alongside the auth banner so the recovery path is obvious.
-    setStatus(`Failed to load plans: ${e.message}`, 'error');
-    if (/sign(ed)? in/i.test(e.message)) {
-      // Re-check auth state in case the token expired between popup open
-      // and now; show the banner if we just lost auth.
-      const { hasToken, webOrigin } = await getAuthState();
-      if (!hasToken) showAuthBanner(webOrigin);
+    // alongside the auth banner so the recovery path is obvious. Crucially,
+    // we also wipe the stale token: a common case is "popup remembers a JWT
+    // from a previous session that has since expired", in which case
+    // hasToken=true on open but every backend call 401s. Clearing here flips
+    // us back into the unsigned-in UI on next open (and immediately, below).
+    if (/sign(ed)? in/i.test(e.message) || /401/.test(e.message)) {
+      await clearStaleToken();
+      const { webOrigin } = await getAuthState();
+      showAuthBanner(webOrigin);
+      return;
     }
+    setStatus(`Failed to load plans: ${e.message}`, 'error');
   }
 }
 
@@ -260,3 +285,39 @@ elImport.addEventListener('click', async () => {
   showSignedIn(auth.webOrigin);
   await loadPlans();
 })();
+
+/**
+ * React live to storage changes so the popup recovers without a manual close
+ * + reopen cycle. Two scenarios this covers:
+ *
+ *   1. User opens popup → sees "Sign in to Butler" banner → clicks the button
+ *      → signs in on the Butler tab → STORE_TOKEN fires → butlerToken
+ *      appears in storage → we transparently swap UI to signed-in and load
+ *      plans. (Without this, the user would have to close + reopen the
+ *      popup, which is non-obvious.)
+ *
+ *   2. User signs out from Butler in another tab → CLEAR_TOKEN fires →
+ *      butlerToken removed → we swap back to the banner so a subsequent
+ *      Import attempt doesn't 401 silently.
+ *
+ *   3. backendBase auto-syncs (web pushes webOrigin → background derives
+ *      backendBase) — reflect the new value in the input field so the user
+ *      sees the right host without reopening.
+ */
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== 'local') return;
+  if ('butlerToken' in changes) {
+    const newVal = changes.butlerToken.newValue;
+    if (newVal && typeof newVal === 'string') {
+      const { webOrigin } = await getAuthState();
+      showSignedIn(webOrigin);
+      await loadPlans();
+    } else {
+      const { webOrigin } = await getAuthState();
+      showAuthBanner(webOrigin);
+    }
+  }
+  if ('backendBase' in changes && typeof changes.backendBase.newValue === 'string') {
+    elBackend.value = changes.backendBase.newValue;
+  }
+});

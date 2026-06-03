@@ -9,11 +9,16 @@
   <div class="wrap">
     <h1>Butler PG Importer</h1>
 
-    <!-- Auth banner — appears only when the extension has no Butler JWT yet
-         (user hasn't signed in to Butler in this browser, or signed out). -->
+    <!-- Auth banner — appears when the extension has no valid Butler JWT
+         (user never signed in on this browser, signed out, or the cached
+         token expired and was cleared by a 401 response). The button opens
+         Butler in a new tab; the popup auto-recovers via the storage
+         listener once the web app pushes a fresh token back. -->
     <div id="authBanner" class="auth-banner" hidden>
       <div class="auth-banner__msg">
-        Not signed in to Butler. Imports require an account.
+        <strong>Sign in required.</strong>
+        Butler needs to know who's importing this listing. Click below to
+        open Butler and sign in — this popup will refresh automatically.
       </div>
       <button id="openButlerBtn" class="primary auth-banner__btn">Sign in to Butler ↗</button>
     </div>
