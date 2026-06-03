@@ -8,7 +8,96 @@
 
 ---
 
-## 2026-06-01 (later same day) — Extension v1.0.3 + auto refocus + nginx no-cache + token lifecycle
+## 2026-06-03 (later) — M1: Named-step scheduling progress + resumable retry (code complete, awaits DB migration)
+
+Phase 1 of §8.6 is implemented end-to-end. The black-box "0% then 100%" scheduling run is replaced with a 6-step pipeline whose state is persisted per-step on `scheduling_runs`, and a failed run can be resumed without re-doing the steps that already completed.
+
+**Backend**:
+- `backend/supabase/migrations/2026-06-03-scheduling-steps.sql` — adds `current_step`, `step_state`, `step_log`, `step_artifacts` to `scheduling_runs`. **Idempotent** (uses `add column if not exists`). **Not yet applied to prod** — user must run it in Supabase Dashboard SQL Editor before the new code can run a scheduling job. Once applied, both legacy and new payload shapes coexist (the new columns just stay empty for old rows).
+- `backend/src/lib/scheduling/schedulerSteps.ts` (new) — step registry (`STEP_DEFS`), state helpers (`blankStepState`, `progressFromState`, `nextStepToRun`), and DB write helpers (`markStepRunning`, `markStepDone`, `markStepFailed`). Order: `gather → geocode → cluster → travel → optimize → persist`. Labels are plain English ("Locating properties on the map…") per PRD decision #1.
+- `backend/src/lib/repositories/plansRepository.ts` — `runScheduler` rewritten as an orchestrator that loops `nextStepToRun(state)`, calling 6 separate step bodies (`runStep_gather`, `runStep_geocode`, `runStep_cluster`, `runStep_travel`, `runStep_optimize`, `runStep_persist`). Each body reads its inputs from prior `step_artifacts` and returns its own artifact patch. On throw → step marked failed, status flipped to `failed`, orchestrator returns. New `retrySchedulingRun(runId)` flips status back to `running` and re-enters the loop, skipping done steps.
+- `SchedulingRun` business interface gains `currentStep` + `stepState`, `SchedulingRunRow` mapper updated.
+- `backend/src/server.ts` — `POST /api/scheduling-runs/:runId/retry` (404/409 contract), `GET /api/scheduling-steps` (static catalogue for frontend label sync).
+
+**Frontend**:
+- `web/src/components/SchedulingProgress.tsx` (new) — collapsed bar + expandable step list. Spinner on current step, ✓/✗/○ on others. "Retry from failed step" button on failed runs. Pure presentational; receives `run` + `steps` + `onRetry`.
+- `web/src/api.ts` — `SchedulingRun` interface gets `currentStep` + `stepState`; new `retrySchedulingRun` + `fetchSchedulingSteps` (with module-level cache since the catalogue is immutable).
+- `web/src/App.tsx` — `schedulingRun` and `schedulingSteps` state added; `pollSchedulingRun(runId)` extracted (used by both initial start and retry); `retryScheduling` handler; old in-button spinner replaced with the new `<SchedulingProgress>` component above the dock; button text simplified to "Scheduling…" when running. Step catalogue fetched on mount.
+- Poll interval shortened from 1500ms → 800ms (typical 10-listing run is < 10s, so the bar needs to feel alive).
+
+**Build/lint status**: backend `tsc --noEmit` clean, web `tsc --noEmit` clean, `npm run build` green.
+
+**Pending (user action)**:
+1. Apply the migration in Supabase Dashboard SQL Editor (the file is small, idempotent).
+2. Run `deploy/deploy-source-build.sh` to ship to prod.
+
+After both, `https://app.hey-alfred.vip` will show the named-step progress bar on every scheduling run.
+
+---
+
+## 2026-06-03 — PRD v1.1: Scheduling Run UX (Phase 1) + Conversational Refinement Agent (Phase 2B)
+
+`BUTLER.md` 升到 v1.1。两件事：
+
+1. **新增 §0 实现状态对照表** — 把 PRD 各章节的"目标"对照"当前实现状态"列出来，方便接手者快速知道哪些章节是已落地的、哪些是计划。截至本次：§4/§7/§10/§13/§14/§15 已落地，§5/§8/§9/§16 部分落地，§6/§11/§12 计划中。
+2. **新增 §8.6 *Scheduling Run UX & Conversational Refinement*** — 把 scheduling 模块下一阶段的产品规格写死。Phase 1 进度条（命名步骤 + 步骤级断点续跑），Phase 2B 跑完进入 chat + artifact 双栏调优（OpenAI gpt-4o-mini，中等 tool scope，两段式重排，schedule_locked 状态机）。脑爆决策记录在 §8.6 头部，后续不再讨论。
+
+实施分 5 个 milestone（M1 进度条、M2 agent 后端、M3 chat UI、M4 锁定状态、M5 联调），约 7.5 天。下一步从 M1 开干 — 后端拆 step + DB 迁移先行。
+
+---
+
+## 2026-06-01 (late evening) — Real domain `app.hey-alfred.vip` + Let's Encrypt → unblocks Chrome extension
+
+**Root cause we'd been chasing for hours:** the production server's self-signed certificate (`subject == issuer`, CN = `47.236.98.146`) is **not trusted by Chrome's extension service-worker network stack**, even after the user manually clicks "Advanced → Proceed" in the main browser. That browser-level exception only applies to top-level page loads, not to fetches initiated from an `chrome-extension://` context. Symptoms:
+
+- Popup `LIST_PLANS` → `Failed to fetch` (request never left the SW; nginx never logged it).
+- Auto-import flow's `IMPORT_TO_TOUR` → same fail or 401 (depending on whether the SW happened to be warm with a stale TLS handshake).
+- Content script's *page-context* fetches DID reach the server (because the content script runs in the PG tab's network stack, which had inherited the user's manual cert override) — adding to the confusion.
+
+**Fix — real domain + real cert:**
+
+- Bought `hey-alfred.vip` (Aliyun, 2026-06-01). DNS A records `app` and `@` → `47.236.98.146`, TTL 600s. Verified with `dig +short app.hey-alfred.vip @8.8.8.8`.
+- On the server (Alibaba Cloud Linux 3): `dnf install certbot python3-certbot-nginx`, then `certbot certonly --webroot -w /var/www/letsencrypt -d app.hey-alfred.vip -d hey-alfred.vip`. Cert lives at `/etc/letsencrypt/live/app.hey-alfred.vip/`. Auto-renew via the systemd timer certbot installs.
+- **`/etc/nginx/conf.d/appointment-scheduler.conf`** rewritten:
+  - port 80 serves `/.well-known/acme-challenge/` from `/var/www/letsencrypt` and 301-redirects everything else to https.
+  - port 443 has three server blocks: `app.hey-alfred.vip` (real cert → proxy to container 3080), `hey-alfred.vip` (real cert → 301 to `app.hey-alfred.vip`), and the legacy `47.236.98.146` self-signed block kept as a fallback so existing bookmarks / installed v1.0.3 extensions don't break during the migration window.
+- **Extension v1.0.5** (`extension/butler-pg-importer-1.0.5.zip`):
+  - `manifest.json` — bumped to `1.0.5`. `host_permissions` and `externally_connectable.matches` now include `https://app.hey-alfred.vip/*` (kept the IP entry for the rollover period). `homepage_url` updated.
+  - `popup.js` — `DEFAULT_BUTLER_URL` switched from `https://47.236.98.146` to `https://app.hey-alfred.vip`. Comment block explains the cert reasoning so the next agent doesn't undo it.
+  - `background.js` — `deriveBackendBaseFromWebOrigin` doc updated to list the new origin.
+- **Web side unchanged** — `extensionBridge.ts` reads `window.location.origin` dynamically, so as long as users access `https://app.hey-alfred.vip` the right origin gets pushed into the extension via `STORE_TOKEN`.
+
+**User-facing migration:**
+1. Visit `https://app.hey-alfred.vip` (no more red "Not secure" warning).
+2. Sign in once on the new origin (Supabase session is per-origin localStorage, so the IP-origin session doesn't carry over).
+3. Reload the extension; v1.0.5 will hot-update from Web Store within ~30min, or click "Update" on `chrome://extensions` to force.
+
+**Known follow-ups:**
+- Update the Web Store listing description / screenshots to mention `hey-alfred.vip`.
+- Eventually remove the `47.236.98.146` server block from nginx + `host_permissions` once we're confident no one is hitting the IP directly.
+- Decide whether to redirect `47.236.98.146` HTTPS to the new domain (currently it just keeps serving the old self-signed app — fine for now).
+
+**Domain trivia (for the next agent):** the original intent was `butler.ai` (since the project is a Butler/concierge app), but `bulter.ai` was bought by mistake, then refunded/replaced. `hey-alfred.vip` is the working name (Alfred = Batman's butler). The product code/UI still says "Butler"; the domain is just the public address.
+
+---
+
+
+Hardening the auth UX on top of v1.0.3 after a real-world miss: a popup that had cached a token from a previous session showed `(unknown origin)` + `localhost:8787` + a generic "Failed to load plans" 401 instead of the sign-in banner, because `hasToken` was true (token *exists* in storage) even though the JWT had expired and `butlerWebOrigin` was never written by the older v1.0.2 install.
+
+- **`extension/popup.js`** —
+  - 401 from `/api/plans` now actively wipes the stale `butlerToken` from `chrome.storage.local` and immediately re-renders the auth banner instead of silently leaving the popup in a broken "signed in but everything 401s" state.
+  - Banner status text now spells out the recovery flow ("Click Sign in to Butler — once you're logged in, come back and reopen this popup").
+  - Banner render also clears the dropdown contents so the user doesn't see the previous session's plans behind the warning.
+  - Added a `chrome.storage.onChanged` listener that hot-swaps the popup UI when `butlerToken` appears (after the user signs in on the Butler tab and the web app pushes STORE_TOKEN) — so the user no longer has to manually close + reopen the popup. Also reflects live `backendBase` updates into the input field.
+- **`extension/popup.html`** — banner copy upgraded to a stronger CTA ("Sign in required. Butler needs to know who's importing this listing. Click below to open Butler — this popup will refresh automatically.").
+- **`extension/manifest.json`** — bumped to `1.0.4`. Web side `extensionBridge.ts` constants unchanged; the production extension ID `melnenopfkellcalpdbopiickpmidjld` continues to be the target.
+
+**One-time cleanup users hit on the upgrade path** (v1.0.1/1.0.2 → 1.0.4):
+The `butlerWebOrigin` field didn't exist before v1.0.3, so installs that *upgraded in place* may have a token but no origin. v1.0.4's 401 → clear-token path makes this self-healing: the next failed call wipes the bad token, the banner appears, the user signs in, and the v1.0.3+ STORE_TOKEN handler writes both fields cleanly.
+
+---
+
+
 
 A follow-up cluster of UX/auth fixes landed after smoke-testing the morning's Aliyun deploy:
 

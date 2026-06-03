@@ -146,6 +146,13 @@ export interface SchedulingRun {
     scheduledCount: number;
     attentionCount: number;
   };
+  // Phase 1 (2026-06-03) — per-step UX. See schedulerSteps.ts for canonical
+  // step list. `currentStep` is the step name the orchestrator was last
+  // working on (whether it's now done, running, or failed). `stepState`
+  // gives the frontend the full per-step status map so the progress UI can
+  // render checkmarks / spinners / red X marks per row.
+  currentStep?: string;
+  stepState?: Record<string, 'pending' | 'running' | 'done' | 'failed'>;
 }
 
 export interface AttentionItem {
@@ -252,6 +259,11 @@ interface SchedulingRunRow {
   attention_count: number;
   started_at: string;
   completed_at: string | null;
+  // Phase 1 (2026-06-03) — see schedulerSteps.ts
+  current_step: string | null;
+  step_state: Record<string, string> | null;
+  step_log: unknown[] | null;
+  step_artifacts: Record<string, unknown> | null;
 }
 
 interface AttentionItemRow {
@@ -382,6 +394,12 @@ function rowToSchedulingRun(r: SchedulingRunRow): SchedulingRun {
       r.status === 'completed'
         ? { scheduledCount: r.scheduled_count, attentionCount: r.attention_count }
         : undefined,
+    currentStep: r.current_step ?? undefined,
+    stepState:
+      (r.step_state as Record<
+        string,
+        'pending' | 'running' | 'done' | 'failed'
+      >) ?? undefined,
   };
 }
 
@@ -695,9 +713,30 @@ export async function replaceConversationsForTour(
 
 /* ─── Scheduling ─────────────────────────────────────────────────────────── */
 
-import { planSchedule, type ScheduleRequest } from '../scheduling/planSchedule';
+import { planSchedule, type ScheduleRequest, type ScheduleResponse } from '../scheduling/planSchedule';
+import {
+  type ListingGeo,
+  type TravelEstimate,
+  buildTravelMatrix,
+  clusterListings,
+  geocodeListings,
+} from '../scheduling/geoUtils';
 import { getOneMapToken } from '../scheduling/oneMapClient';
 import { getBuyerSlotsForTour } from './conversationsMock';
+import {
+  STEP_KEYS,
+  type StepKey,
+  type StepStatus,
+  type StepArtifacts,
+  type StepLogEntry,
+  blankStepState,
+  nextStepToRun,
+  patchRun,
+  markStepRunning,
+  markStepDone,
+  markStepFailed,
+  logEntry,
+} from '../scheduling/schedulerSteps';
 
 export async function startSchedulingRun(tourId: string): Promise<SchedulingRun> {
   const userId = getCurrentUserId();
@@ -709,6 +748,9 @@ export async function startSchedulingRun(tourId: string): Promise<SchedulingRun>
       user_id: userId,
       status: 'running',
       progress: 0,
+      step_state: blankStepState(),
+      step_log: [],
+      step_artifacts: {},
     })
     .select()
     .single();
@@ -719,6 +761,56 @@ export async function startSchedulingRun(tourId: string): Promise<SchedulingRun>
   void runScheduler(run.id, tourId, userId, jwt);
 
   return run;
+}
+
+/**
+ * Retry a failed scheduling run from its first non-'done' step.
+ * Returns the run state immediately (status flipped back to 'running'),
+ * the orchestrator continues in the background.
+ *
+ * Throws when:
+ *   - run not found (caller should 404)
+ *   - run is not in 'failed' state (caller should 409)
+ */
+export async function retrySchedulingRun(runId: string): Promise<SchedulingRun> {
+  if (!isUuid(runId)) throw new Error('RUN_NOT_FOUND');
+  const userId = getCurrentUserId();
+  const jwt = getCurrentJwt();
+  const c = db();
+  const { data: existing, error: fetchErr } = await c
+    .from('scheduling_runs')
+    .select('*')
+    .eq('id', runId)
+    .maybeSingle();
+  if (fetchErr) throw fetchErr;
+  if (!existing) throw new Error('RUN_NOT_FOUND');
+  const row = existing as SchedulingRunRow;
+  if (row.status !== 'failed') throw new Error('RUN_NOT_FAILED');
+
+  // Flip status back to running but KEEP step_state and step_artifacts —
+  // the orchestrator reads them to skip already-done steps.
+  const log = (row.step_log as StepLogEntry[]) ?? [];
+  log.push(logEntry('gather', 'info', `Retry triggered at ${new Date().toISOString()}`));
+  await c
+    .from('scheduling_runs')
+    .update({
+      status: 'running',
+      completed_at: null,
+      step_log: log,
+    })
+    .eq('id', runId);
+
+  const refreshed = await c
+    .from('scheduling_runs')
+    .select('*')
+    .eq('id', runId)
+    .single();
+  const refreshedRun = rowToSchedulingRun(refreshed.data as SchedulingRunRow);
+
+  // Resume in background.
+  void runScheduler(runId, row.tour_id, userId, jwt);
+
+  return refreshedRun;
 }
 
 async function probeOneMap(): Promise<boolean> {
@@ -734,6 +826,17 @@ async function probeOneMap(): Promise<boolean> {
   }
 }
 
+/**
+ * Orchestrator. Reads current step_state from DB, runs each non-'done' step
+ * in order, persists artifacts after every step, marks failure-and-stop on
+ * exception. Resumable: a fresh start has every step pending; a retry call
+ * has some steps 'done' and we skip them.
+ *
+ * The 6 step bodies are inlined below as `runStep_xxx`. They share the same
+ * shape:
+ *   (artifacts, ctx) → Promise<Partial<StepArtifacts>>
+ * On throw → orchestrator sets that step to 'failed' and stops the run.
+ */
 async function runScheduler(
   runId: string,
   tourId: string,
@@ -741,132 +844,324 @@ async function runScheduler(
   jwt: string,
 ): Promise<void> {
   return runWithUser({ userId, jwt }, async () => {
-    const finishWith = async (mutate: (run: SchedulingRunRow) => Partial<SchedulingRunRow>) => {
-      const c = db();
-      const { data: existing } = await c
-        .from('scheduling_runs')
-        .select('*')
-        .eq('id', runId)
-        .maybeSingle();
-      if (!existing) return;
-      const patch = mutate(existing as SchedulingRunRow);
-      await c.from('scheduling_runs').update(patch).eq('id', runId);
+    const c = db();
+
+    // 1) Load current run state (could be a fresh start or a retry).
+    const { data: rowData, error: rowErr } = await c
+      .from('scheduling_runs')
+      .select('*')
+      .eq('id', runId)
+      .maybeSingle();
+    if (rowErr || !rowData) {
+      console.error('[scheduler] cannot load run', runId, rowErr);
+      return;
+    }
+    const row = rowData as SchedulingRunRow;
+    let stepState = (row.step_state as Record<StepKey, StepStatus>) || blankStepState();
+    let artifacts: StepArtifacts = (row.step_artifacts as StepArtifacts) || {};
+    let stepLog = (row.step_log as StepLogEntry[]) || [];
+
+    const append = (entry: StepLogEntry) => {
+      stepLog = [...stepLog, entry];
     };
 
-    try {
-      const listings = await listListingsByTour(tourId);
+    // 2) Run each step in order, skipping 'done' ones.
+    while (true) {
+      const next = nextStepToRun(stepState);
+      if (!next) break;
 
-      const reachable: Listing[] = [];
-      const blocked: Listing[] = [];
-      for (const l of listings) {
-        if (l.agentReachable === false) blocked.push(l);
-        else reachable.push(l);
+      try {
+        stepState = await markStepRunning(c, runId, stepState, next);
+        append(logEntry(next, 'info', 'started'));
+
+        const t0 = Date.now();
+        let patch: Partial<StepArtifacts> = {};
+        switch (next) {
+          case 'gather':
+            patch = await runStep_gather(tourId, append);
+            break;
+          case 'geocode':
+            patch = await runStep_geocode(artifacts, append);
+            break;
+          case 'cluster':
+            patch = await runStep_cluster(artifacts, append);
+            break;
+          case 'travel':
+            patch = await runStep_travel(artifacts, append);
+            break;
+          case 'optimize':
+            patch = await runStep_optimize(artifacts, append);
+            break;
+          case 'persist':
+            patch = await runStep_persist(c, runId, tourId, userId, artifacts, append);
+            break;
+        }
+
+        const dur = Date.now() - t0;
+        append(logEntry(next, 'info', `done in ${dur}ms`));
+
+        const updated = await markStepDone(c, runId, stepState, next, patch, artifacts);
+        stepState = updated.state;
+        artifacts = updated.artifacts;
+        // Persist the running log periodically (every step end).
+        await patchRun(c, runId, { step_log: stepLog });
+      } catch (err) {
+        console.error('[scheduler] step', next, 'failed:', err);
+        await markStepFailed(c, runId, stepState, stepLog, next, err);
+        return;
       }
-
-      const buyerSlots = getBuyerSlotsForTour(tourId);
-      const useOneMap = await probeOneMap();
-
-      const scheduleRequest: ScheduleRequest = {
-        buyerSlots: buyerSlots.map((w) => ({ ...w })),
-        listings: reachable.map((l) => ({
-          listingId: l.id,
-          address: l.address || l.title,
-          lat: l.lat,
-          lng: l.lng,
-          agentName: l.coAgent?.name || 'Unknown',
-          availableSlots: (l.availability || []).map((w) => ({ ...w })),
-        })),
-        config: { useOneMap, viewingDurationMinutes: 30, bufferMinutes: 15 },
-      };
-
-      console.log(
-        '[scheduler] run',
-        runId,
-        'tour',
-        tourId,
-        `reachable=${reachable.length} blocked=${blocked.length} buyerSlots=${buyerSlots.length} useOneMap=${useOneMap}`,
-      );
-
-      const t0 = Date.now();
-      const result = await planSchedule(scheduleRequest);
-      console.log(
-        '[scheduler] planSchedule done in',
-        Date.now() - t0,
-        'ms',
-        'scheduled=',
-        result.schedule.length,
-        'unschedulable=',
-        result.unschedulable.length,
-      );
-
-      const scheduledById = new Map(result.schedule.map((sv) => [sv.listingId, sv]));
-      const unschedById = new Map(result.unschedulable.map((u) => [u.listingId, u]));
-
-      let scheduledCount = 0;
-      let attentionCount = 0;
-
-      // Re-fetch listings to update them; also collect new attention items.
-      const liveListings = await listListingsByTour(tourId);
-      const c = db();
-
-      for (const l of liveListings) {
-        if (l.agentReachable === false) {
-          attentionCount++;
-          await ensureAttentionItem(c, tourId, userId, l.id, l.attentionReason || 'Co-agent unreachable');
-          continue;
-        }
-        const sched = scheduledById.get(l.id);
-        if (sched) {
-          await c
-            .from('listings')
-            .update({
-              status: 'confirmed',
-              status_label: 'Confirmed',
-              suggested_time: `${sched.startTime} – ${sched.endTime}`,
-              attention_reason: null,
-            })
-            .eq('id', l.id);
-          scheduledCount++;
-          continue;
-        }
-        const un = unschedById.get(l.id);
-        if (un) {
-          await c
-            .from('listings')
-            .update({
-              status: 'needs-attention',
-              status_label: 'No matching slot',
-              suggested_time: 'Pending',
-              attention_reason: un.reason,
-            })
-            .eq('id', l.id);
-          attentionCount++;
-          await ensureAttentionItem(c, tourId, userId, l.id, un.reason);
-        }
-      }
-
-      await finishWith(() => ({
-        status: 'completed',
-        progress: 100,
-        completed_at: new Date().toISOString(),
-        scheduled_count: scheduledCount,
-        attention_count: attentionCount,
-      }));
-
-      console.log(
-        '[scheduler] ✓ run',
-        runId,
-        'done',
-        `scheduled=${scheduledCount} attention=${attentionCount}`,
-      );
-    } catch (err) {
-      console.error('[scheduler] ✗ run', runId, 'failed:', err);
-      await finishWith(() => ({
-        status: 'failed',
-        completed_at: new Date().toISOString(),
-      }));
     }
+
+    // 3) All 6 steps done → finalize run row.
+    await patchRun(c, runId, {
+      status: 'completed',
+      completed_at: new Date().toISOString(),
+      progress: 100,
+      step_log: stepLog,
+    });
+    console.log('[scheduler] ✓ run', runId, 'completed');
   });
+}
+
+// ─── Step implementations ───────────────────────────────────────────────
+
+async function runStep_gather(
+  tourId: string,
+  log: (e: StepLogEntry) => void,
+): Promise<Partial<StepArtifacts>> {
+  const listings = await listListingsByTour(tourId);
+  const reachable: Listing[] = [];
+  const blocked: Listing[] = [];
+  for (const l of listings) {
+    if (l.agentReachable === false) blocked.push(l);
+    else reachable.push(l);
+  }
+  const buyerSlots = getBuyerSlotsForTour(tourId);
+  const useOneMap = await probeOneMap();
+
+  const scheduleRequest: ScheduleRequest = {
+    buyerSlots: buyerSlots.map((w) => ({ ...w })),
+    listings: reachable.map((l) => ({
+      listingId: l.id,
+      address: l.address || l.title,
+      lat: l.lat,
+      lng: l.lng,
+      agentName: l.coAgent?.name || 'Unknown',
+      availableSlots: (l.availability || []).map((w) => ({ ...w })),
+    })),
+    config: { useOneMap, viewingDurationMinutes: 30, bufferMinutes: 15 },
+  };
+
+  log(
+    logEntry(
+      'gather',
+      'info',
+      `reachable=${reachable.length} blocked=${blocked.length} buyerSlots=${buyerSlots.length} useOneMap=${useOneMap}`,
+    ),
+  );
+
+  return {
+    gather: {
+      reachableIds: reachable.map((l) => l.id),
+      blockedIds: blocked.map((l) => l.id),
+      buyerSlots,
+      useOneMap,
+      scheduleRequest,
+    },
+  };
+}
+
+async function runStep_geocode(
+  artifacts: StepArtifacts,
+  log: (e: StepLogEntry) => void,
+): Promise<Partial<StepArtifacts>> {
+  const gather = artifacts.gather;
+  if (!gather) throw new Error('gather artifacts missing — cannot geocode');
+  const listingsForGeo = gather.scheduleRequest.listings.map((l) => ({
+    listingId: l.listingId,
+    address: l.address,
+    lat: l.lat,
+    lng: l.lng,
+  }));
+  let geoListings: ListingGeo[];
+  try {
+    geoListings = await geocodeListings(listingsForGeo);
+  } catch (err) {
+    // Mirror planSchedule's tolerance: fall back to zero-geo so the run
+    // still completes (just with no distance optimization). We log a
+    // warning so the agent can see it in step_log if they look.
+    log(
+      logEntry(
+        'geocode',
+        'warn',
+        `geocoding failed, falling back to zero-geo: ${(err as Error).message.split('\n')[0]}`,
+      ),
+    );
+    geoListings = listingsForGeo.map((l) => ({
+      listingId: l.listingId,
+      address: l.address,
+      lat: l.lat ?? 0,
+      lng: l.lng ?? 0,
+    }));
+  }
+  return { geocode: { geoListings } };
+}
+
+async function runStep_cluster(
+  artifacts: StepArtifacts,
+  log: (e: StepLogEntry) => void,
+): Promise<Partial<StepArtifacts>> {
+  const useOneMap = artifacts.gather?.useOneMap ?? false;
+  const geo = artifacts.geocode?.geoListings ?? [];
+  if (!geo.length) {
+    log(logEntry('cluster', 'info', 'no listings to cluster'));
+    return { cluster: { geoListings: geo } };
+  }
+  let clustered: ListingGeo[];
+  try {
+    clustered = await clusterListings(geo, useOneMap);
+  } catch (err) {
+    log(
+      logEntry(
+        'cluster',
+        'warn',
+        `clustering failed, using ungrouped: ${(err as Error).message.split('\n')[0]}`,
+      ),
+    );
+    clustered = geo;
+  }
+  return { cluster: { geoListings: clustered } };
+}
+
+async function runStep_travel(
+  artifacts: StepArtifacts,
+  log: (e: StepLogEntry) => void,
+): Promise<Partial<StepArtifacts>> {
+  const useOneMap = artifacts.gather?.useOneMap ?? false;
+  const clustered = artifacts.cluster?.geoListings ?? [];
+  if (clustered.length < 2) {
+    log(logEntry('travel', 'info', 'fewer than 2 listings, skipping travel matrix'));
+    return { travel: { travelMatrix: {} } };
+  }
+  let matrix: Map<string, TravelEstimate>;
+  try {
+    matrix = await buildTravelMatrix(clustered, useOneMap);
+  } catch (err) {
+    log(
+      logEntry(
+        'travel',
+        'warn',
+        `travel matrix failed, using zero distances: ${(err as Error).message.split('\n')[0]}`,
+      ),
+    );
+    matrix = new Map();
+  }
+  // Map → Record for jsonb storage
+  const obj: Record<string, TravelEstimate> = {};
+  for (const [k, v] of matrix.entries()) obj[k] = v;
+  return { travel: { travelMatrix: obj } };
+}
+
+async function runStep_optimize(
+  artifacts: StepArtifacts,
+  log: (e: StepLogEntry) => void,
+): Promise<Partial<StepArtifacts>> {
+  const gather = artifacts.gather;
+  if (!gather) throw new Error('gather artifacts missing — cannot optimize');
+  const t0 = Date.now();
+  // For now we re-run planSchedule end-to-end — it does its own geocoding/
+  // clustering/travel matrix. The earlier steps' artifacts are mainly there
+  // for visibility (and for Phase 2B, where re-runs can leverage them).
+  // TODO(phase2b): pass pre-computed geo/cluster/travel from artifacts to
+  // planSchedule so this step is a pure greedy assignment.
+  const result = await planSchedule(gather.scheduleRequest);
+  log(
+    logEntry(
+      'optimize',
+      'info',
+      `planSchedule done in ${Date.now() - t0}ms, scheduled=${result.schedule.length}, unschedulable=${result.unschedulable.length}`,
+    ),
+  );
+  return {
+    optimize: {
+      schedule: result.schedule,
+      unschedulable: result.unschedulable,
+    },
+  };
+}
+
+async function runStep_persist(
+  c: SupabaseClient,
+  runId: string,
+  tourId: string,
+  userId: string,
+  artifacts: StepArtifacts,
+  log: (e: StepLogEntry) => void,
+): Promise<Partial<StepArtifacts>> {
+  const opt = artifacts.optimize;
+  if (!opt) throw new Error('optimize artifacts missing — cannot persist');
+
+  const scheduledById = new Map(opt.schedule.map((sv) => [sv.listingId, sv]));
+  const unschedById = new Map(opt.unschedulable.map((u) => [u.listingId, u]));
+
+  let scheduledCount = 0;
+  let attentionCount = 0;
+
+  const liveListings = await listListingsByTour(tourId);
+  for (const l of liveListings) {
+    if (l.agentReachable === false) {
+      attentionCount++;
+      await ensureAttentionItem(c, tourId, userId, l.id, l.attentionReason || 'Co-agent unreachable');
+      continue;
+    }
+    const sched = scheduledById.get(l.id);
+    if (sched) {
+      await c
+        .from('listings')
+        .update({
+          status: 'confirmed',
+          status_label: 'Confirmed',
+          suggested_time: `${sched.startTime} – ${sched.endTime}`,
+          attention_reason: null,
+        })
+        .eq('id', l.id);
+      scheduledCount++;
+      continue;
+    }
+    const un = unschedById.get(l.id);
+    if (un) {
+      await c
+        .from('listings')
+        .update({
+          status: 'needs-attention',
+          status_label: 'No matching slot',
+          suggested_time: 'Pending',
+          attention_reason: un.reason,
+        })
+        .eq('id', l.id);
+      attentionCount++;
+      await ensureAttentionItem(c, tourId, userId, l.id, un.reason);
+    }
+  }
+
+  log(
+    logEntry(
+      'persist',
+      'info',
+      `wrote scheduled=${scheduledCount} attention=${attentionCount}`,
+    ),
+  );
+
+  // Persist counts directly on the run row so the API response carries them.
+  await c
+    .from('scheduling_runs')
+    .update({
+      scheduled_count: scheduledCount,
+      attention_count: attentionCount,
+    })
+    .eq('id', runId);
+
+  return {};
 }
 
 async function ensureAttentionItem(

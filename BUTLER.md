@@ -1,5 +1,41 @@
 # 功能规格：智能搜房与看房行程规划
-版本 1.0 | 新加坡独立房产中介自动化平台
+版本 1.1 | 新加坡独立房产中介自动化平台
+
+> **版本历史**
+> - **v1.0** (2025-Q4 初稿) — 完整功能规格定稿
+> - **v1.1** (2026-06-03) — 新增 §8.6 *Scheduling Run UX & Conversational Refinement*（Phase 1 进度条 + Phase 2B 对话式调优 agent）；增补 §0 *实现状态对照表*
+
+---
+
+## 0. 实现状态对照表（截至 2026-06-03）
+
+> 本节是给"接手的下一个工程师 / 下一次 agent 会话"看的：PRD 描述的是目标产品；本表说明每块当下到底落地到什么程度。所有"已实现"项在 `change_log.md` 都能找到对应日期入口。
+
+| 章节 | 模块 | 状态 | 备注 |
+|------|------|------|------|
+| §4 | 创建 Plan | ✅ 已实现 | Supabase 落库（`plans` 表，RLS by `user_id`），UI 走 `web/src/App.tsx` 的 `createPlan` |
+| §5 | 搜索房源（增值搜房） | 🟡 部分 | 名校圈/通勤/AI 语义筛选**尚未实现**；当前从 PropertyGuru 通过 Chrome extension（Butler PG Importer，已上 Web Store，ID `melnenopfkellcalpdbopiickpmidjld`）逐条 import |
+| §5 | PG Extension 抓取 | ✅ 已实现 | v1.0.5（基本+高级抓取、reveal contact、auto-import via tab、auto refocus、token 同步、storage 监听自愈） |
+| §6 | 买家无登录链接选房 + 填写时间 | ⏳ 计划中 | 后端 share_token 路由已存在（`/api/share/routes/:shareToken`），但**买家选房 UI 未实现**；当前 `getBuyerSlotsForTour` 还在用 mock 数据 |
+| §7 | 中介规划分组 | ✅ 已实现 | 按 area 分组的 listing 视图（`groupListingsByArea`） |
+| §8 | Scheduling Agent — 卖家时间收集 | 🟡 部分 | 后端 mock 化：`seedTourConversations` 一次性塞入 4 种场景（happy / partial / unreachable / rejected）；**真实 WhatsApp Cloud API 接入未做**；schedule 算法 (`planSchedule`) 真实可用 |
+| §8.6 | Scheduling Run UX (Phase 1) | 📋 待开发 | **本次新增**：进度条 + 命名步骤 + 步骤级断点续跑 |
+| §8.6 | Conversational Refinement (Phase 2B) | 📋 待开发 | **本次新增**：跑完后进入 chat + artifact 双栏，OpenAI gpt-4o-mini，中等 tool scope，两段式重排 |
+| §9 | 例外处理 | 🟡 部分 | `attention_items` 表 + UI 已有；自动跟进 / 决策卡推送**未做** |
+| §10 | 最终行程 | ✅ 已实现 | `routes` 表 + `generateRoute` + 客户分享链接 (`share_token`)；按 confirmed listings 时间顺序生成 stops |
+| §11 | 容错层（非结构化回复处理） | ⏳ 计划中 | 现在 `parsedIntent` 是 mock 数据上手填的；真实 LLM 解析未接 |
+| §12 | 撤销与回退 | ⏳ 计划中 | scheduling_runs 有"重跑"概念但没"undo"，listing 改动不可撤 |
+| §13 | 少即是多原则 | ✅ 持续遵循 | 设计准则，非 feature |
+| §14 | 排程规则 | ✅ 已实现 | `planSchedule` 实现规则 1–6（cluster + greedy + 15-min granularity + OneMap 真实 travel time，token 失败回退 Haversine） |
+| §15 | 数据模型 | ✅ 已实现 | Supabase schema 在线，主键 UUID，RLS 全表启用 |
+| §16 | 相关 API | 🟡 部分 | OneMap ✅、Supabase ✅、WhatsApp Cloud API ❌、OpenAI ❌（Phase 2B 即将引入） |
+
+**架构现状速记**（详见 `technical_solution.md`）：
+- Frontend：`web/`（Vite + React + TS + TailwindCSS），生产域名 `https://app.hey-alfred.vip`，Let's Encrypt 真证书
+- Backend：`backend/`（Node 22 + Express + TypeScript），Supabase 落库，AsyncLocalStorage 注入 user JWT 给 RLS
+- Extension：Chrome MV3，公开 ID `melnenopfkellcalpdbopiickpmidjld`，与 web 同 origin（`STORE_TOKEN` 链路）
+- Deploy：阿里云 ECS（`47.236.98.146`）+ Docker Compose + 容器内 nginx + 宿主 nginx 反代 + HTTPS
+- 数据库：Supabase Postgres，所有用户数据 RLS by `user_id = auth.uid()`
 
 ---
 
@@ -12,6 +48,7 @@
 6. [第二步：买家确认感兴趣的房源](#6-第二步买家确认感兴趣的房源)
 7. [第三步：中介规划分组](#7-第三步中介规划分组)
 8. [第四步：Scheduling Agent Skill — 卖家时间收集](#8-第四步scheduling-agent-skill--卖家时间收集)
+   - 8.6 [Scheduling Run UX & Conversational Refinement (v1.1)](#86-scheduling-run-ux--conversational-refinement-v11-新增)
 9. [第五步：例外处理](#9-第五步例外处理)
 10. [第六步：最终行程](#10-第六步最终行程)
 11. [容错层：非结构化回复处理](#11-容错层非结构化回复处理)
@@ -553,6 +590,433 @@ our best to fit around your schedule."
 AI：  "Thank you for your flexibility. We'd like to schedule
       the viewing at 11:00am this Saturday — does that work?"
 ```
+
+---
+
+### 8.6 Scheduling Run UX & Conversational Refinement (v1.1 新增)
+
+> **What this section adds**：把 §8.5 自动跑完的 scheduler 包装成 (a) 用户**看得见进度**的过程、(b) 跑完后**可以用自然语言调整**的 agent 交互。
+> **Status**：📋 设计阶段，分两期落地。Phase 1（进度条）作为独立 milestone 先上；Phase 2B（对话调优）随后。
+> **Decisions locked on 2026-06-03**（脑爆共识）：
+> 1. 步骤名走自然语言风格（"Locating properties on the map"），不暴露技术黑话
+> 2. 进度条**只显示步骤进度**，不展示 cluster 列表 / travel matrix 等中间副产物
+> 3. **直接做 Phase 2B**（chat + artifact 双栏），不做轻量的 sidebar Q&A 中间形态
+> 4. Agent **后置出现**：进度条跑完才进 chat 模式（first-time 用户不被卡在前置对话里）
+> 5. LLM：**OpenAI gpt-4o-mini**（key 由用户提供，server-side 持有）
+> 6. Tool scope：**中**（读 + 改 schedule，不直接发 WhatsApp）
+> 7. 重排策略：**两段式**（先尝试局部，冲突则回退全量重跑，对话里告知 cascade）
+> 8. 失败粒度：**步骤级断点续跑**（已完成步骤的中间结果存 DB）
+
+---
+
+#### 8.6.1 现状缺陷
+
+| 缺陷 | 用户感受 | 根因 |
+|------|---------|------|
+| 跑 scheduler 时只有 spinner | "不知道还要多久 / 现在在干嘛" | `scheduling_runs.progress` 只在最后从 0 跳到 100 |
+| 失败只返回 `status='failed'` | "为什么失败？要不要重试？" | 没有步骤级的状态记录 |
+| 跑完了用户没法改 | "我想让 X 排上午，但 X 被排到下午了" | scheduler 是 stateless 全量算的；UI 没有"调整"入口 |
+| 黑盒决策 | "为什么 X 被排成 needs-attention？" | 失败原因写进 `attention_reason` 但分散在各 listing 行，没有"统一答疑"入口 |
+
+---
+
+#### 8.6.2 Phase 1 — 进度条 / 状态栏（独立可上线）
+
+##### 步骤定义（自然语言）
+
+把 `runScheduler` 拆成 6 个命名步骤，每步在 DB 写一次状态：
+
+| Index | Step Key | UI Label (英) | 中文映射 | 当前对应代码 |
+|---|---|---|---|---|
+| 1 | `gather` | "Gathering listings & availability" | "收集房源和可用时间" | filter reachable + buyerSlots + probeOneMap |
+| 2 | `geocode` | "Locating properties on the map" | "定位房源地址" | `geocodeListings()` |
+| 3 | `cluster` | "Clustering nearby listings" | "把临近房源分组" | `clusterListings()` |
+| 4 | `travel` | "Computing travel times" | "计算路程时间" | `buildTravelMatrix()` |
+| 5 | `optimize` | "Optimizing schedule" | "排出最优行程" | greedy block assignment in `planSchedule()` |
+| 6 | `persist` | "Saving results" | "保存结果" | 写回 listings + ensureAttentionItem |
+
+**总耗时实测**：10 个 listing 普遍 < 10s（用户基准）。所以进度条做**精简版**就够：纯步骤勾选，不显示每步耗时（耗时可以在 step_log 里给 debug 用）。
+
+##### 数据库迁移
+
+```sql
+ALTER TABLE scheduling_runs
+  ADD COLUMN current_step text,                          -- 'gather'|'geocode'|...
+  ADD COLUMN step_state jsonb DEFAULT '{}'::jsonb,       -- {gather:'done', geocode:'running', ...}
+  ADD COLUMN step_log jsonb DEFAULT '[]'::jsonb,         -- [{ts, step, level:'info'|'warn'|'error', msg}]
+  ADD COLUMN step_artifacts jsonb DEFAULT '{}'::jsonb;   -- 中间结果，用于断点续跑（不暴露给前端）
+```
+
+`progress` 字段语义保留，但用 `floor(完成步骤数 / 6 * 100)` 自动派生（最后 step `persist` 完才写 100）。
+
+##### Backend 改造
+
+```ts
+// backend/src/lib/scheduling/schedulerSteps.ts (新文件)
+export const STEP_DEFS = [
+  { key: 'gather',   label: 'Gathering listings & availability',   weight: 1 },
+  { key: 'geocode',  label: 'Locating properties on the map',      weight: 2 },
+  { key: 'cluster',  label: 'Clustering nearby listings',          weight: 1 },
+  { key: 'travel',   label: 'Computing travel times',              weight: 3 },
+  { key: 'optimize', label: 'Optimizing schedule',                 weight: 1 },
+  { key: 'persist',  label: 'Saving results',                      weight: 1 },
+] as const;
+
+// runScheduler 拆成 6 个 async function (gatherStep / geocodeStep / ...)，
+// 每个 step:
+//   - 从 step_artifacts 读上一步产物
+//   - 计算
+//   - 把 artifact 写回 step_artifacts
+//   - 把 step_state[key] 改成 'done'，current_step 改成下一步 key
+//   - 进度条所需的 progress 字段同步更新
+//
+// 一个 step 内部 throw 不再 fail 整个 run，而是：
+//   - step_state[key] = 'failed'
+//   - status = 'failed'
+//   - step_log 追加 error
+//   重试时：load step_state，从第一个非 'done' 步骤继续。
+```
+
+##### API 形状
+
+```ts
+// GET /api/scheduling-runs/:runId
+{
+  run: {
+    id, tourId, status: 'running'|'completed'|'failed',
+    progress: 0..100,
+    currentStep: 'travel',                       // 新
+    stepState: {                                 // 新
+      gather: 'done',
+      geocode: 'done',
+      cluster: 'done',
+      travel: 'running',
+      optimize: 'pending',
+      persist: 'pending',
+    },
+    startedAt, completedAt,
+    result?: { scheduledCount, attentionCount },
+  },
+  // 不返回 step_log（debug 用）和 step_artifacts（内部状态）
+}
+
+// POST /api/scheduling-runs/:runId/retry  (新)
+// 从第一个非 'done' 步骤继续。如果 status != 'failed' 返回 409。
+```
+
+##### 前端改造
+
+替换 `TourActionDock` 现有 spinner，加一个固定在底部的**进度面板**：
+
+```
+┌─────────────────────────────────────────────────┐
+│ 🤖  Butler is working…             67%          │
+│ ████████████████░░░░░░░                         │
+│ Currently: Computing travel times…              │
+└─────────────────────────────────────────────────┘
+```
+
+点击展开后：
+
+```
+┌─────────────────────────────────────────────────┐
+│ ✓  Gathering listings & availability            │
+│ ✓  Locating properties on the map               │
+│ ✓  Clustering nearby listings                   │
+│ ⠋  Computing travel times                       │
+│ ○  Optimizing schedule                          │
+│ ○  Saving results                               │
+│                                                  │
+│ [ Cancel ]                  [ Show details ▾ ]  │
+└─────────────────────────────────────────────────┘
+```
+
+失败态：
+
+```
+┌─────────────────────────────────────────────────┐
+│ ⚠️  Scheduling stopped at step 4                │
+│ ✓  Gathering listings & availability            │
+│ ✓  Locating properties on the map               │
+│ ✓  Clustering nearby listings                   │
+│ ✗  Computing travel times — OneMap unreachable  │
+│                                                  │
+│ [ Retry from step 4 ]      [ Start over ]      │
+└─────────────────────────────────────────────────┘
+```
+
+##### Phase 1 验收标准
+
+- [ ] 跑 10 个 listing 时进度条平滑前进，不会 "0% 卡 8 秒后跳 100%"
+- [ ] 步骤名是自然语言（"Locating properties on the map"），不出现 "geocoding" 等术语
+- [ ] 失败后能从失败步骤重试，不重做已完成的部分
+- [ ] 不展示 cluster 列表 / travel matrix 等中间数据
+- [ ] 旧 API 字段（`progress`、`status`、`result`）向后兼容，老前端代码不会崩
+
+---
+
+#### 8.6.3 Phase 2B — 对话式调优 Agent
+
+跑完进入这个 UI（替代当前的"侧栏 route 视图"）：
+
+```
+┌──────────────────────────┬───────────────────────────┐
+│  💬 Butler              │ 📅 Tour: Alicia · Apr 28  │
+│                          │ ────────────────────────── │
+│  Done! 9 of 12 scheduled.│ Morning (Orchard area)     │
+│  3 issues:               │  10:00  Orchard Residences │
+│   • Newton Suites…       │  10:45  Wallich            │
+│   • Scotts conflict…     │ ────────────────────────── │
+│   • Daniel Lim away      │ Afternoon (Newton)         │
+│                          │  14:00  Scotts Square      │
+│  ─────────────────       │  16:00  Valley Park        │
+│                          │ ────────────────────────── │
+│  You: "Move Scotts to    │ Unscheduled (3)            │
+│        morning"          │  ⚠ Newton Suites           │
+│                          │  ⚠ Tampines Court          │
+│  Butler: That conflicts  │  ⚠ Bishan Park             │
+│  with Wallich (same      │                             │
+│  block). Would you like  │ [ Confirm schedule ]        │
+│  to drop Wallich, or     │                             │
+│  keep both and use the   │                             │
+│  4pm slot for Scotts?    │                             │
+│                          │                             │
+│  ┌─ proposed change ──┐  │                             │
+│  │ Scotts: 14→11:00   │  │                             │
+│  │ Wallich: dropped   │  │                             │
+│  │ [Apply] [Discard]  │  │                             │
+│  └────────────────────┘  │                             │
+│                          │                             │
+│  [ message ____________ ]│                             │
+└──────────────────────────┴───────────────────────────┘
+```
+
+##### 数据模型
+
+```sql
+CREATE TABLE scheduling_sessions (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tour_id       uuid NOT NULL REFERENCES tours(id) ON DELETE CASCADE,
+  user_id       uuid NOT NULL,
+  run_id        uuid REFERENCES scheduling_runs(id),  -- run 完后开 session
+  status        text NOT NULL DEFAULT 'open',         -- 'open' | 'finalized' | 'archived'
+  finalized_at  timestamptz,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE scheduling_session_messages (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id      uuid NOT NULL REFERENCES scheduling_sessions(id) ON DELETE CASCADE,
+  role            text NOT NULL,                       -- 'user' | 'assistant' | 'tool'
+  content         text,                                -- assistant/user text; tool 时为 null
+  tool_name       text,                                -- when role='tool'
+  tool_call_id    text,                                -- 关联 OpenAI tool_call
+  tool_arguments  jsonb,
+  tool_result     jsonb,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE schedule_change_proposals (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id      uuid NOT NULL REFERENCES scheduling_sessions(id) ON DELETE CASCADE,
+  message_id      uuid REFERENCES scheduling_session_messages(id),
+  changes         jsonb NOT NULL,                      -- [{listingId, action:'reschedule'|'drop'|'add', from:..., to:...}]
+  cascade         jsonb,                               -- 两段式 fallback 时记录"为了排进 X，连带改了 Y/Z"
+  applied_at      timestamptz,                         -- 用户点 Apply 后填
+  discarded_at    timestamptz                          -- Discard 后填
+);
+```
+
+`tours` 表加一列 `schedule_locked_at timestamptz` 用于 §8.6.5 的 finalize。
+
+##### Tool 接口（中 scope）
+
+```ts
+const SCHEDULING_AGENT_TOOLS = {
+  // ── 读 ──
+  get_schedule: {
+    desc: 'Return the current full schedule for this tour: scheduled items + unscheduled with reasons.',
+    args: {},
+  },
+  get_listing_detail: {
+    desc: 'Get details for one listing (address, agent name, availability, current status).',
+    args: { listingId: 'string' },
+  },
+  get_unscheduled_reason: {
+    desc: 'Why is listing X not on the schedule?',
+    args: { listingId: 'string' },
+  },
+  get_travel_time: {
+    desc: 'Estimated travel time between two listings (or buyer location → listing).',
+    args: { from: 'listingId|buyer', to: 'listingId' },
+  },
+
+  // ── 写（提交后产生 schedule_change_proposals 行，等用户 Apply）──
+  propose_reschedule: {
+    desc: 'Propose moving a listing to a new time. Triggers two-stage replanning: try local first, fall back to full re-run if conflicts.',
+    args: { listingId: 'string', newStart: 'HH:MM', date?: 'YYYY-MM-DD' },
+  },
+  propose_swap: {
+    desc: 'Swap the time slots of two listings.',
+    args: { listingIdA: 'string', listingIdB: 'string' },
+  },
+  propose_drop: {
+    desc: 'Remove a listing from this tour (not the plan). Releases its time slot.',
+    args: { listingId: 'string', reason?: 'string' },
+  },
+  propose_add_constraint: {
+    desc: 'Add a buyer-side constraint then re-plan. e.g. "Listing X must be morning", "no viewings before 10am".',
+    args: { type: 'before_time'|'after_time'|'must_morning'|'must_afternoon'|'date', listingId?: 'string', value: 'string' },
+  },
+} as const;
+```
+
+**写工具不直接 commit**。每次都产出一个 `schedule_change_proposals` 行，前端把它渲染成那个"proposed change card"，用户点 **Apply** 才真改 listings 表。这样：
+- 用户能看到 cascade（"为了排进 X，我也调了 Y"）
+- 撤销栈天然存在（Discard 即不应用）
+- 错操作不污染数据
+
+##### 两段式重排算法（`tryLocalThenFullReplan`）
+
+```ts
+async function applyReschedule(tourId, listingId, newStart) {
+  // 1. 局部尝试：能否只移动 listingId 而不冲突？
+  const local = tryLocalMove(tourId, listingId, newStart);
+  if (local.ok) return { mode: 'local', changes: [local.change] };
+
+  // 2. 全量回退：在 ScheduleConfig 加 hard constraint 再 planSchedule()
+  const config = currentConfigPlusConstraint(listingId, newStart);
+  const full = await planSchedule({ ...currentRequest, config });
+
+  // 3. 计算 diff = (旧 schedule) → (新 schedule)
+  const cascade = diff(oldSchedule, full.schedule).filter(c => c.listingId !== listingId);
+
+  return { mode: 'full', changes: full.schedule, cascade };
+}
+```
+
+如果是 `mode: 'full'` 且 cascade 非空，agent prompt 必须显式告知用户："To fit X at 11am, I also moved Y to 13:00 and Z became unschedulable." 
+
+##### Agent prompt 核心结构（草稿）
+
+```
+You are Butler, an AI assistant helping a Singapore property agent
+plan a viewing tour. The schedule has just been auto-generated.
+Your job: answer questions, propose changes via tools, explain
+trade-offs in plain English.
+
+CURRENT TOUR CONTEXT:
+- Buyer: {buyerName}
+- Date: {targetDate}
+- Listings: {n_total} ({n_scheduled} scheduled, {n_unscheduled} not)
+- Schedule: {compact_table}
+- Unscheduled with reasons: {compact_list}
+
+CONSTRAINTS:
+- Singapore agent, English by default. If user writes Chinese, reply Chinese.
+- All time changes go through propose_* tools — never claim a change is
+  applied unless the user clicks Apply.
+- When propose_reschedule's result has cascade, EXPLICITLY state every
+  cascading change before asking user to approve.
+- Be concise. Property agents are busy.
+- Don't second-guess the optimizer's geographic clustering unless asked.
+
+TOOL USAGE:
+- For any question that needs schedule data, use get_schedule first.
+- Don't propose changes the user didn't ask for.
+- When user asks "why X at Y time?", use get_unscheduled_reason or
+  reason from get_travel_time + get_schedule.
+```
+
+模型：`gpt-4o-mini`，temperature 0.3，max output tokens 800。预期单次对话 3–8 turn，成本 < $0.01/session。
+
+##### 前端组件树
+
+```
+SchedulingChatView (替代当前的 sidePanel='route')
+├── ConversationPane (左)
+│   ├── MessageList
+│   │   ├── UserBubble
+│   │   ├── AssistantBubble
+│   │   └── ToolCallCard (for propose_*; renders <Apply/Discard>)
+│   ├── InputBar
+│   └── TokenUsageFooter (debug only, behind flag)
+└── ScheduleArtifactPane (右)
+    ├── ScheduleByBlock (Morning/Lunch/Afternoon/Evening)
+    ├── UnscheduledList (with reasons)
+    └── ConfirmScheduleButton  → §8.6.5
+```
+
+新文件：
+- `web/src/components/SchedulingChat/SchedulingChatView.tsx`
+- `web/src/components/SchedulingChat/ToolCallCard.tsx`
+- `web/src/components/SchedulingChat/ScheduleArtifactPane.tsx`
+- `web/src/lib/schedulingChat.ts`（API client + SSE/poll for streaming response）
+
+---
+
+#### 8.6.4 OpenAI 接入（仅 server-side）
+
+```
+Agent key 存在 backend 的环境变量 OPENAI_API_KEY，永远不下发到前端。
+新加 backend/src/lib/llm/openaiClient.ts 包装：
+  - chat completion (with tools)
+  - streaming (server-sent events 转给前端 / 也可同步 fallback)
+  - 用量统计（写 scheduling_sessions.token_usage 累加）
+```
+
+费用上限保护（防止意外死循环）：
+- 单 session 总 in-token 上限 100K（约 $0.015）
+- 单 session 总 turn 上限 30
+- 命中上限 → assistant 回 "I've reached this conversation's compute budget. Please confirm or start a new schedule." → status 锁住
+
+---
+
+#### 8.6.5 Schedule 状态机 & 定稿
+
+```
+[draft]                              ← scheduling_run 完成时进入
+   ↓ user chats / applies proposals
+[draft]                              ← 始终在 draft，每次 apply 是原地改
+   ↓ user clicks "Confirm schedule"
+[locked]                             ← tours.schedule_locked_at = now()
+   ↓ user clicks "Unlock to edit"   (可选，需要 confirm)
+[draft]
+```
+
+- **draft 期**：listing.status 用现有的 `confirmed`/`needs-attention` 视觉，但底层有 `tours.schedule_locked_at IS NULL`
+- **locked 后**：右栏 ScheduleArtifactPane 顶部出现绿色 banner "Locked at 14:32 by Maya Chen"，"Confirm" 按钮变 "Unlock"
+- **生成 route + share with client** 这两个动作**只在 locked 后开放**（Phase 2B 的硬性产品要求）
+- chat 在 locked 后仍可继续用，但 propose_* 工具会先弹 "This schedule is locked. Unlock to make changes?" 
+
+---
+
+#### 8.6.6 实施计划 & 时间线
+
+| 里程碑 | 范围 | 估时 | 依赖 |
+|---|---|---|---|
+| **M1 — Phase 1 上线** | DB 迁移、scheduler 拆步、API 字段、前端进度组件、失败重试 | 1.5 天 | 无 |
+| **M2 — Phase 2B 后端骨架** | scheduling_sessions 表、OpenAI 接入、tool router、proposal 表、两段式重排 | 2.5 天 | OPENAI_API_KEY 配置 |
+| **M3 — Phase 2B 前端 UI** | 双栏布局、消息流、tool call diff card、artifact pane | 2 天 | M2 |
+| **M4 — Schedule 状态机** | locked 字段、Confirm/Unlock 按钮、route 生成依赖 locked | 0.5 天 | M3 |
+| **M5 — 联调 + 边界** | 失败注入、并发改动、token 用量上限、文案打磨 | 1 天 | M1–M4 |
+| **总计** | | **~7.5 天** | |
+
+每个里程碑独立可交付：
+- M1 跑完用户立刻有进度条体验；
+- M2+M3 一起出才有意义（agent 必须前后端一起跑），可以 feature-flag 着；
+- M4 是产品逻辑收尾。
+
+---
+
+#### 8.6.7 暂未纳入本期的事（Backlog）
+
+- `send_whatsapp_to_agent` / `request_new_slot_from_co_agent`（大 scope tool） — 等 Cloud API 接入后再加
+- 多人同时编辑同一 schedule 的并发控制（当前同 user 同 tour 同时只允许一个 active session）
+- 把 Phase 1 的 `step_artifacts` 暴露成"诊断模式"开关，给开发自查
+- 进度条做成"AI 在干什么"的拟人句式（如"Butler is checking how long it takes from Orchard to Newton..."），文案打磨二期
+- Agent 主动建议（用户没问 → AI 主动说"我注意到 Newton Suites 排不进，要不要找别的时段？"）
 
 ---
 

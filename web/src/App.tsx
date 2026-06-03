@@ -53,6 +53,7 @@ import * as api from "./api"
 import { pingExtension, importViaTab, waitForImportResult, storeTokenInExtension } from "./extensionBridge"
 import { initAuth, getStoredToken, signOut, type ButlerUser } from "./auth"
 import { SignIn } from "./SignIn"
+import { SchedulingProgress } from "./components/SchedulingProgress"
 
 type View = "workspace" | "conversations" | "route" | "settings"
 type SidePanel = "map" | "route" | "listing" | null
@@ -127,6 +128,10 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
   const [importText, setImportText] = useState("")
   const [schedulingStarted, setSchedulingStarted] = useState(false)
   const [schedulingRunning, setSchedulingRunning] = useState(false)
+  /** Live run row from /scheduling-runs/:id; drives <SchedulingProgress />. */
+  const [schedulingRun, setSchedulingRun] = useState<api.SchedulingRun | null>(null)
+  /** Step catalogue from /scheduling-steps; fetched once on mount. */
+  const [schedulingSteps, setSchedulingSteps] = useState<api.SchedulingStepDef[]>([])
   const [, setTimelineSlots] = useState<TimelineSlot[]>([])
 
   const activePlan = workspacePlans.find((plan) => plan.id === selectedPlanId) ?? null
@@ -206,6 +211,16 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
       }
     }).catch(() => { /* fallback: stays empty */ })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Load static scheduling step catalogue (for progress UI labels) ──
+  // The list is small + immutable, so we cache it on the api module side too.
+  // Failing here just means progress UI uses fallback labels — not fatal.
+  useEffect(() => {
+    api
+      .fetchSchedulingSteps()
+      .then(setSchedulingSteps)
+      .catch((e) => console.warn('[scheduling-steps] fetch failed:', e))
+  }, [])
 
   const createPlan = async (draft: PlanDraft) => {
     try {
@@ -340,6 +355,7 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
   const startScheduling = async () => {
     setSchedulingStarted(true)
     setSchedulingRunning(true)
+    setSchedulingRun(null)
     setSidePanel("route")
 
     if (!activeTour) { setSchedulingRunning(false); return }
@@ -363,18 +379,29 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
     try {
       const run = await api.startSchedulingRun(activeTour.id)
       runId = run.id
+      setSchedulingRun(run)
     } catch (e) {
       console.error('[scheduling] start failed:', e)
       setSchedulingRunning(false)
       return
     }
 
-    // 3) Poll until completed, then refresh listings to reflect final
-    //    status / suggestedTime / attentionReason produced by planSchedule.
+    // 3) Poll until completed/failed. We keep polling at 800ms — fast enough
+    //    that the progress bar doesn't feel stuck on a single step, slow
+    //    enough to not hammer the backend.
+    pollSchedulingRun(runId)
+  }
+
+  /**
+   * Drive the SchedulingProgress component by polling the run row. Updates
+   * `schedulingRun` on every tick, then on completed/failed pulls fresh
+   * listings + clears the running flag. Used by both the initial start
+   * and the retry path.
+   */
+  const pollSchedulingRun = (runId: string) => {
     const startedAt = Date.now()
     const POLL_TIMEOUT_MS = 60_000
     const poll = setInterval(async () => {
-      if (!runId) { clearInterval(poll); setSchedulingRunning(false); return }
       if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
         console.warn('[scheduling] poll timeout, giving up on run', runId)
         clearInterval(poll)
@@ -383,27 +410,46 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
       }
       try {
         const updated = await api.getSchedulingRun(runId)
+        setSchedulingRun(updated)
         if (updated.status === 'completed' || updated.status === 'failed') {
           clearInterval(poll)
-          const fresh = await api.fetchListings(activeTour.id)
-          if (fresh.length) setListingItems(fresh)
-          // Update timeline slots from the now-confirmed listings
-          const slots: TimelineSlot[] = fresh
-            .filter((l) => l.status === 'confirmed' && l.suggestedTime)
-            .map((l) => ({
-              listingId: l.id,
-              condoName: l.condo,
-              date: activeTour?.targetDate ?? defaultTour.targetDate,
-              time: l.suggestedTime!,
-            }))
-          setTimelineSlots(slots)
+          if (updated.status === 'completed' && activeTour) {
+            const fresh = await api.fetchListings(activeTour.id)
+            if (fresh.length) setListingItems(fresh)
+            const slots: TimelineSlot[] = fresh
+              .filter((l) => l.status === 'confirmed' && l.suggestedTime)
+              .map((l) => ({
+                listingId: l.id,
+                condoName: l.condo,
+                date: activeTour?.targetDate ?? defaultTour.targetDate,
+                time: l.suggestedTime!,
+              }))
+            setTimelineSlots(slots)
+          }
           setSchedulingRunning(false)
-          console.log('[scheduling] run', runId, 'finished:', updated.result, 'fresh listings:', fresh.length)
+          console.log('[scheduling] run', runId, 'finished:', updated.status, updated.result)
         }
       } catch (err) {
         console.warn('[scheduling] poll error, will retry:', err)
       }
-    }, 1500)
+    }, 800)
+  }
+
+  /**
+   * User clicked "Retry from failed step" in the SchedulingProgress UI.
+   * Backend resumes from the first non-'done' step.
+   */
+  const retryScheduling = async () => {
+    if (!schedulingRun) return
+    setSchedulingRunning(true)
+    try {
+      const refreshed = await api.retrySchedulingRun(schedulingRun.id)
+      setSchedulingRun(refreshed)
+      pollSchedulingRun(refreshed.id)
+    } catch (e) {
+      console.error('[scheduling] retry failed:', e)
+      setSchedulingRunning(false)
+    }
   }
 
   const toggleListing = (id: string) => {
@@ -458,6 +504,8 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
             tourStats={tourStats}
             schedulingStarted={schedulingStarted}
             schedulingRunning={schedulingRunning}
+            schedulingRun={schedulingRun}
+            schedulingSteps={schedulingSteps}
             onClosePanel={() => setSidePanel(null)}
             onSelectListing={toggleListing}
             onDeleteListing={deleteListingItem}
@@ -467,6 +515,7 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
             onToggleMap={toggleMap}
             onNewTour={() => setNewTourOpen(true)}
             onStartScheduling={startScheduling}
+            onRetryScheduling={retryScheduling}
             onImportListings={(imported) => setListingItems((prev) => {
               const map = new Map(prev.map((l) => [l.id, l]))
               for (const l of imported) map.set(l.id, l)
@@ -759,6 +808,8 @@ function PlanWorkspace({
   tourStats,
   schedulingStarted,
   schedulingRunning,
+  schedulingRun,
+  schedulingSteps,
   onClosePanel,
   onSelectListing,
   onDeleteListing,
@@ -768,6 +819,7 @@ function PlanWorkspace({
   onToggleMap,
   onNewTour,
   onStartScheduling,
+  onRetryScheduling,
   onImportListings,
 }: {
   activeTour: ViewingTour
@@ -779,6 +831,8 @@ function PlanWorkspace({
   tourStats: Array<{ label: string; value: string; alert?: boolean }>
   schedulingStarted: boolean
   schedulingRunning: boolean
+  schedulingRun: api.SchedulingRun | null
+  schedulingSteps: api.SchedulingStepDef[]
   onClosePanel: () => void
   onSelectListing: (id: string) => void
   onDeleteListing: (id: string) => void
@@ -788,6 +842,7 @@ function PlanWorkspace({
   onToggleMap: () => void
   onNewTour: () => void
   onStartScheduling: () => void
+  onRetryScheduling: () => void
   onImportListings: (listings: Listing[]) => void
 }) {
   // Area · Status filter (purely client-side; resets when underlying listings change)
@@ -926,6 +981,18 @@ function PlanWorkspace({
           </div>
 
           <div className="shrink-0 pt-4">
+            {/* Phase 1 §8.6 — replaces the old standalone spinner with a
+                named-step progress panel. Only visible while a run is in
+                flight or has just finished/failed. */}
+            {(schedulingRunning || schedulingRun) && (
+              <div className="pb-3">
+                <SchedulingProgress
+                  run={schedulingRun}
+                  steps={schedulingSteps}
+                  onRetry={onRetryScheduling}
+                />
+              </div>
+            )}
             <TourActionDock
               activeTour={activeTour}
               importText={importText}
@@ -1282,8 +1349,12 @@ function TourActionDock({
                   disabled={schedulingRunning}
                   className={`inline-flex cursor-pointer items-center justify-center gap-2 rounded-l-2xl px-5 py-3 text-sm font-bold text-white shadow-[0_10px_24px_rgba(255,56,92,0.28)] transition-colors focus:outline-none focus:ring-2 focus:ring-[#222222] focus:ring-offset-2 ${schedulingRunning ? "cursor-not-allowed bg-[#b0b0b0] shadow-none" : "bg-[#ff385c] hover:bg-[#e00b41]"}`}
                 >
+                  {/* When schedulingRunning, the SchedulingProgress panel
+                      above already shows the live state. The button itself
+                      just stays disabled with a neutral label so the user's
+                      attention stays on the progress card. */}
                   {schedulingRunning ? (
-                    <>AI Scheduling in progress <span className="inline-block size-4 animate-spin rounded-full border-2 border-white border-t-transparent" /></>
+                    <>Scheduling…</>
                   ) : schedulingStarted ? (
                     <>Re-run AI scheduling <Send className="size-4" /></>
                   ) : (

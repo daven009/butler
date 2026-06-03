@@ -35,9 +35,11 @@ import {
   removeListingFromTour,
   shareRoute,
   startSchedulingRun,
+  retrySchedulingRun,
 } from './lib/repositories/plansRepository';
 import { seedTourConversations } from './lib/repositories/conversationsMock';
 import { runWithUser } from './lib/userContext';
+import { STEP_DEFS } from './lib/scheduling/schedulerSteps';
 import { verifyToken, supabaseAdmin } from './lib/supabase';
 
 const app = express();
@@ -453,6 +455,36 @@ app.get('/api/scheduling-runs/:runId', async (req, res) => {
   const run = await getSchedulingRun(req.params.runId);
   if (!run) return notFound(res, 'RUN_NOT_FOUND', 'Scheduling run not found');
   return res.status(200).json({ run });
+});
+
+/**
+ * Retry a failed scheduling run from its first non-'done' step. The run
+ * row's step_state and step_artifacts are preserved, so completed steps
+ * (e.g. gather, geocode) won't re-run on retry.
+ *
+ * 404 → run not found
+ * 409 → run is not in 'failed' state (caller must wait or look at status)
+ */
+app.post('/api/scheduling-runs/:runId/retry', async (req, res) => {
+  try {
+    const run = await retrySchedulingRun(req.params.runId);
+    return res.status(202).json({ run });
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (msg === 'RUN_NOT_FOUND') return notFound(res, 'RUN_NOT_FOUND', 'Scheduling run not found');
+    if (msg === 'RUN_NOT_FAILED') {
+      return sendError(res, 409, 'RUN_NOT_FAILED', 'Run is not in failed state; cannot retry.');
+    }
+    throw err;
+  }
+});
+
+/**
+ * Static step catalogue. Frontend reads this once on mount so progress UI
+ * labels stay in sync with the backend (instead of duplicating the list).
+ */
+app.get('/api/scheduling-steps', (_req, res) => {
+  return res.status(200).json({ steps: STEP_DEFS });
 });
 
 app.get('/api/tours/:tourId/conversations', async (req, res) => {

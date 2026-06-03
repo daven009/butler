@@ -108,7 +108,13 @@ create table if not exists public.scheduling_runs (
   scheduled_count int  not null default 0,
   attention_count int  not null default 0,
   started_at      timestamptz not null default now(),
-  completed_at    timestamptz
+  completed_at    timestamptz,
+  -- Phase 1 (2026-06-03): per-step state for the named-step progress UX.
+  -- See migrations/2026-06-03-scheduling-steps.sql for details.
+  current_step    text,
+  step_state      jsonb not null default '{}'::jsonb,
+  step_log        jsonb not null default '[]'::jsonb,
+  step_artifacts  jsonb not null default '{}'::jsonb
 );
 
 create table if not exists public.attention_items (

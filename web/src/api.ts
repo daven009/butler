@@ -125,6 +125,13 @@ export async function seedTourConversations(tourId: string, agentName?: string):
   })
 }
 
+export interface SchedulingStepDef {
+  key: string
+  label: string
+}
+
+export type SchedulingStepStatus = 'pending' | 'running' | 'done' | 'failed'
+
 export interface SchedulingRun {
   id: string
   tourId: string
@@ -133,6 +140,10 @@ export interface SchedulingRun {
   startedAt: string
   completedAt?: string
   result?: { scheduledCount: number; attentionCount: number }
+  /** Phase 1 (2026-06-03) — current named step the orchestrator was on. */
+  currentStep?: string
+  /** Phase 1 — full per-step status map. Order matches /api/scheduling-steps. */
+  stepState?: Record<string, SchedulingStepStatus>
 }
 
 export async function startSchedulingRun(tourId: string): Promise<SchedulingRun> {
@@ -146,6 +157,33 @@ export async function startSchedulingRun(tourId: string): Promise<SchedulingRun>
 export async function getSchedulingRun(runId: string): Promise<SchedulingRun> {
   const data = await apiFetch<{ run: SchedulingRun }>(`/scheduling-runs/${runId}`)
   return data.run
+}
+
+/**
+ * Retry a failed scheduling run from its first non-'done' step. Steps that
+ * already completed are NOT re-run (the backend persists step_artifacts).
+ *
+ * Returns the run row with status flipped back to 'running'; poll
+ * getSchedulingRun() afterwards just like a fresh run.
+ */
+export async function retrySchedulingRun(runId: string): Promise<SchedulingRun> {
+  const data = await apiFetch<{ run: SchedulingRun }>(`/scheduling-runs/${runId}/retry`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+  return data.run
+}
+
+/**
+ * Fetch the static step catalogue used by the progress UI. Cached on first
+ * call — these never change at runtime.
+ */
+let _stepDefsCache: SchedulingStepDef[] | null = null
+export async function fetchSchedulingSteps(): Promise<SchedulingStepDef[]> {
+  if (_stepDefsCache) return _stepDefsCache
+  const data = await apiFetch<{ steps: SchedulingStepDef[] }>(`/scheduling-steps`)
+  _stepDefsCache = data.steps
+  return data.steps
 }
 
 /* ─── Conversations ─── */
