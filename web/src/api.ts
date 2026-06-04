@@ -186,6 +186,123 @@ export async function fetchSchedulingSteps(): Promise<SchedulingStepDef[]> {
   return data.steps
 }
 
+/* ─── Scheduling chat session (Phase 2B / §8.6.3) ─── */
+
+export interface SchedulingSession {
+  id: string
+  tourId: string
+  userId: string
+  runId?: string
+  status: 'open' | 'finalized' | 'archived'
+  finalizedAt?: string
+  promptTokens: number
+  completionTokens: number
+  totalTurns: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type SessionMessageRole = 'system' | 'user' | 'assistant' | 'tool'
+
+export interface SessionMessage {
+  id: string
+  sessionId: string
+  role: SessionMessageRole
+  content?: string
+  toolCalls?: Array<{
+    id: string
+    type: 'function'
+    function: { name: string; arguments: string }
+  }>
+  toolCallId?: string
+  toolName?: string
+  toolResult?: unknown
+  createdAt: string
+}
+
+export type ProposalChangeAction = 'reschedule' | 'swap' | 'drop' | 'add'
+
+export interface ProposalChange {
+  listingId: string
+  action: ProposalChangeAction
+  from: string | null
+  to: string | null
+}
+
+export interface ScheduleChangeProposal {
+  id: string
+  sessionId: string
+  messageId?: string
+  intentSummary?: string
+  mode: 'local' | 'full'
+  changes: ProposalChange[]
+  cascade: ProposalChange[]
+  appliedAt?: string
+  discardedAt?: string
+  createdAt: string
+}
+
+/** Open or fetch the existing open session for this tour. */
+export async function openSchedulingSession(
+  tourId: string,
+  runId?: string,
+): Promise<SchedulingSession> {
+  const data = await apiFetch<{ session: SchedulingSession }>(
+    `/tours/${tourId}/scheduling-sessions`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ runId: runId ?? null }),
+    },
+  )
+  return data.session
+}
+
+export async function fetchSessionMessages(
+  sessionId: string,
+): Promise<{ session: SchedulingSession; messages: SessionMessage[] }> {
+  return apiFetch(`/scheduling-sessions/${sessionId}/messages`)
+}
+
+/**
+ * Send a user message; the backend runs one full agent turn (1–4s typical)
+ * and returns the updated history. We ignore `assistant` field — caller can
+ * just look at the last message in `messages`.
+ */
+export async function sendSchedulingMessage(
+  sessionId: string,
+  text: string,
+): Promise<{ session: SchedulingSession; messages: SessionMessage[]; assistant: SessionMessage }> {
+  return apiFetch(`/scheduling-sessions/${sessionId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  })
+}
+
+export async function fetchSessionProposals(
+  sessionId: string,
+): Promise<ScheduleChangeProposal[]> {
+  const data = await apiFetch<{ proposals: ScheduleChangeProposal[] }>(
+    `/scheduling-sessions/${sessionId}/proposals`,
+  )
+  return data.proposals
+}
+
+export async function applyProposal(
+  proposalId: string,
+): Promise<{ ok: true; appliedChanges: number }> {
+  return apiFetch(`/scheduling-proposals/${proposalId}/apply`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+}
+
+export async function discardProposal(proposalId: string): Promise<void> {
+  await apiFetch(`/scheduling-proposals/${proposalId}/discard`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+}
+
 /* ─── Conversations ─── */
 
 export interface Conversation {

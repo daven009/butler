@@ -1,14 +1,15 @@
 /**
- * Scheduling agent tool implementations — read-only subset.
- *
- * This file ships only the 4 GET tools so the end-to-end OpenAI loop can
- * be exercised first. The propose_* (write) tools land next, once we've
- * confirmed the agent → tool → reply round-trip works.
+ * Scheduling agent tool implementations.
  *
  * Each function corresponds to one tool defined in `schedulingToolDefs.ts`.
  * The dispatcher at the bottom takes a tool name + parsed JSON args and
  * returns a serializable result that we'll send back to the LLM as a
  * `role: 'tool'` message.
+ *
+ * READ tools query the repos directly. WRITE (`propose_*`) tools NEVER
+ * mutate listings — they delegate to `proposalsService.ts` which writes
+ * a `schedule_change_proposals` row. The user explicitly Apply/Discards
+ * via the UI; the actual `listings` mutation lives in `applyProposal`.
  */
 
 import {
@@ -16,6 +17,16 @@ import {
   listListingsByTour,
   getTourDetail,
 } from '../repositories/plansRepository';
+import {
+  buildAddConstraintProposal,
+  buildDropProposal,
+  buildRescheduleProposal,
+  buildSwapProposal,
+  type ProposeAddConstraintArgs,
+  type ProposeDropArgs,
+  type ProposeRescheduleArgs,
+  type ProposeSwapArgs,
+} from '../scheduling/proposalsService';
 import type { SchedulingToolName } from './schedulingToolDefs';
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -186,17 +197,19 @@ export async function runTool(
     case 'get_travel_time':
       return tool_get_travel_time(args as { from: string; to: string }, ctx.tourId);
 
-    // Write tools — implemented in the next M2 step. For now the LLM is
-    // told these exist but calling them returns a polite placeholder so
-    // the agent can apologize and ask the user to wait.
+    // Write tools — implemented in proposalsService.ts. They create a
+    // schedule_change_proposals row and return it; nothing mutates yet.
+    // The chat UI renders the proposal as a diff card with Apply/Discard;
+    // Apply hits POST /scheduling-proposals/:id/apply which calls
+    // applyProposal() from the same service.
     case 'propose_reschedule':
+      return buildRescheduleProposal(args as unknown as ProposeRescheduleArgs, ctx);
     case 'propose_swap':
+      return buildSwapProposal(args as unknown as ProposeSwapArgs, ctx);
     case 'propose_drop':
+      return buildDropProposal(args as unknown as ProposeDropArgs, ctx);
     case 'propose_add_constraint':
-      return {
-        error:
-          'PROPOSE_TOOLS_NOT_YET_IMPLEMENTED — the user can ask for changes, but applying them is being shipped in the next update. For now, only describe the proposed change in plain English; do not claim it was applied.',
-      };
+      return buildAddConstraintProposal(args as unknown as ProposeAddConstraintArgs, ctx);
 
     default: {
       // exhaustive-check — TS will complain if we add a tool name and

@@ -38,32 +38,43 @@ PRD: BUTLER.md §8.6 (locked 2026-06-03)
 2. **Deploy** (or let me do it): `bash deploy/deploy-source-build.sh`
 3. **Sanity check**: open https://app.hey-alfred.vip, run scheduling on a tour, watch the progress bar walk through the 6 steps.
 
-### M2 — Phase 2B backend skeleton 🟡 In progress (read-tool layer shipped)
+### M2 — Phase 2B backend 🟢 phase-1 + phase-2 complete (apply for `mode='full'` deferred to phase-3)
 
 | Item | Status | Notes |
 |---|---|---|
-| DB migration `2026-06-04-scheduling-sessions.sql` (sessions / messages / proposals / tours.schedule_locked_at + RLS) | ✅ written | **Pending: user must apply in Supabase Dashboard** |
-| `openaiClient.ts` — gpt-4o-mini wrapper + budget caps | ✅ | reads `OPENAI_API_KEY` env, throws fast if missing |
-| `schedulingToolDefs.ts` — 8-tool registry + `buildSystemPrompt` | ✅ | Schemas locked; mid-scope per PRD |
-| `schedulingSessionsRepository.ts` — sessions / messages / proposals CRUD | ✅ | RLS-aware via supabaseForUser |
-| `schedulingTools.ts` — read tools (`get_schedule`, `get_listing_detail`, `get_unscheduled_reason`, `get_travel_time`) | ✅ | All 4 read tools live |
-| `schedulingTools.ts` — propose_* tools (reschedule/swap/drop/add_constraint) | 🟡 placeholder | Returns `PROPOSE_TOOLS_NOT_YET_IMPLEMENTED`; agent prompt told to describe-only. Two-stage replan algorithm coming in M2 phase-2 |
-| `schedulingAgent.ts` — runAgentTurn loop with tool-round cap, budget guard | ✅ | OpenAI tool_call narrowing handled |
-| API: `POST /tours/:tourId/scheduling-sessions` | ✅ | get-or-open semantics |
-| API: `GET /scheduling-sessions/:id/messages` | ✅ | full history |
-| API: `POST /scheduling-sessions/:id/messages` | ✅ | runs one full agent turn synchronously, returns assistant + history |
-| API: `GET /scheduling-sessions/:id/proposals` | ✅ | |
-| API: `POST /scheduling-proposals/:id/discard` | ✅ | |
-| API: `POST /scheduling-proposals/:id/apply` | ⏳ pending | gated on real propose_* impls |
-| Backend `tsc --noEmit` | ✅ exit 0 | |
-| Two-stage replan algorithm (`tryLocalThenFullReplan`) | ⏳ next | M2 phase-2 |
+| DB migration `2026-06-04-scheduling-sessions.sql` | ✅ applied | sessions / messages / proposals / tours.schedule_locked_at + RLS |
+| `openaiClient.ts` — gpt-4o-mini wrapper + budget caps | ✅ | |
+| `schedulingToolDefs.ts` — 8-tool registry + `buildSystemPrompt` | ✅ | |
+| `schedulingSessionsRepository.ts` — sessions / messages / proposals CRUD | ✅ | |
+| `schedulingTools.ts` — 4 read tools | ✅ | get_schedule, get_listing_detail, get_unscheduled_reason, get_travel_time |
+| `proposalsService.ts` — 4 propose builders + applyProposal | ✅ | reschedule / swap / drop / add_constraint. applyProposal supports `mode='local'`; `mode='full'` returns 409 (M2 phase-3) |
+| `schedulingTools.ts` — 4 propose tools wired to proposalsService | ✅ | |
+| `schedulingAgent.ts` — runAgentTurn loop | ✅ | tool-round cap, budget guard, OpenAI SDK type narrowing |
+| API: sessions / messages / proposals / discard / apply | ✅ | apply gated to mode='local' |
+| Backend `tsc --noEmit` | ✅ | exit 0 |
+| Conflict-aware reschedule | ✅ | local-mode proposal when no overlap; full-mode + cascade entries when overlap detected |
+| Real two-stage replan (`tryLocalThenFullReplan` invoking planSchedule) | ⏳ phase-3 | mode='full' currently shows conflict but Apply rejects |
 
-**M2 phase-2 next steps**:
-1. Implement real `propose_reschedule` / `propose_swap` / `propose_drop` / `propose_add_constraint` (creates real `schedule_change_proposals` rows with `mode='local'|'full'` + cascade detection).
-2. Implement `apply` endpoint + service (mutates `listings` based on proposal, marks `applied_at`).
-3. Wire scheduling_runs.step_artifacts.travel into get_travel_time so estimates are real OneMap times not Haversine fallback.
+### M3 — Phase 2B frontend 🟢 chat-with-Butler shipped
 
-### M3 — Phase 2B frontend chat UI (not started)
+| Item | Status | Notes |
+|---|---|---|
+| `web/src/api.ts` — Phase 2B types + endpoints | ✅ | SchedulingSession / SessionMessage / ScheduleChangeProposal |
+| `SchedulingChat.tsx` — chat panel + ProposalCard with Apply/Discard | ✅ | message stream, optimistic user bubble, tool-trace pills, proposal diff cards |
+| `App.tsx` integration — auto-open session when run completes, "Butler" toolbar button | ✅ | side panel `chat` mode, applies trigger listings refresh |
+| Frontend `tsc --noEmit` + `vite build` | ✅ | green |
+
+### M4 — Schedule lock state machine (not started)
+
+- `tours.schedule_locked_at` column already exists (migration done).
+- Need: "Confirm schedule" button, Unlock flow, gate route generation + share on locked state.
+
+### M5 — Polish + edge cases (not started)
+
+- Failure injection
+- Concurrent edits
+- Token usage hard cap (UX-side: surface BUDGET_EXHAUSTED gracefully — currently returns synthetic message but doesn't stop user from sending more)
+- Copy review pass
 
 - `SchedulingChatView` with two-pane layout
 - `ToolCallCard` with Apply/Discard

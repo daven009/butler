@@ -49,6 +49,7 @@ import {
   markProposalDiscarded,
 } from './lib/repositories/schedulingSessionsRepository';
 import { runAgentTurn } from './lib/llm/schedulingAgent';
+import { applyProposal } from './lib/scheduling/proposalsService';
 import { verifyToken, supabaseAdmin } from './lib/supabase';
 
 const app = express();
@@ -577,11 +578,6 @@ app.get('/api/scheduling-sessions/:sessionId/proposals', async (req, res) => {
 
 /**
  * Discard a proposal — flips discarded_at without mutating any listings.
- *
- * Apply (which DOES mutate listings) is gated on the actual "two-stage
- * replan" implementation that ships in M2 phase-2; for now apply just
- * isn't exposed because no propose_* tool actually creates real proposals
- * yet (they all return a placeholder).
  */
 app.post('/api/scheduling-proposals/:proposalId/discard', async (req, res) => {
   try {
@@ -590,6 +586,38 @@ app.post('/api/scheduling-proposals/:proposalId/discard', async (req, res) => {
   } catch (err) {
     console.error('[proposal] discard failed:', err);
     return sendError(res, 500, 'DISCARD_FAILED', (err as Error).message);
+  }
+});
+
+/**
+ * Apply a proposal — mutates listings per the proposal's changes[].
+ *
+ * Errors:
+ *   404 PROPOSAL_NOT_FOUND      - id doesn't exist (or RLS-hidden)
+ *   409 PROPOSAL_ALREADY_APPLIED|DISCARDED
+ *   409 PROPOSAL_REQUIRES_FULL_REPLAN — proposal mode='full' (cascade
+ *                                  changes); UI should re-run scheduling
+ *                                  manually until M2 phase-3 wires this
+ *                                  up to a constrained planSchedule re-run.
+ */
+app.post('/api/scheduling-proposals/:proposalId/apply', async (req, res) => {
+  try {
+    const result = await applyProposal(req.params.proposalId);
+    return res.status(200).json(result);
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error('[proposal] apply failed:', msg);
+    if (msg === 'PROPOSAL_NOT_FOUND') {
+      return notFound(res, 'PROPOSAL_NOT_FOUND', 'Proposal not found');
+    }
+    if (
+      msg === 'PROPOSAL_ALREADY_APPLIED' ||
+      msg === 'PROPOSAL_ALREADY_DISCARDED' ||
+      msg === 'PROPOSAL_REQUIRES_FULL_REPLAN'
+    ) {
+      return sendError(res, 409, msg, msg.replace(/_/g, ' ').toLowerCase());
+    }
+    return sendError(res, 500, 'APPLY_FAILED', msg);
   }
 });
 

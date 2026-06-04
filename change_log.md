@@ -8,6 +8,48 @@
 
 ---
 
+## 2026-06-04 (later) — M2 phase-2 + M3: chat-with-Butler is live (read + write tools + Apply/Discard UI)
+
+Conversational scheduling refinement is end-to-end functional. After a scheduling run completes, the right-side dock auto-switches to a "Butler" chat panel where the user can ask questions, request changes, and click Apply/Discard on proposed mutations.
+
+**Backend — propose_* tools + apply path**:
+- `backend/src/lib/scheduling/proposalsService.ts` (new) — builders for the 4 write tools + `applyProposal()`. `propose_reschedule` does conflict detection: if the new slot doesn't overlap any other confirmed listing → `mode='local'`, single-change. If it overlaps → `mode='full'` with cascade entries (the listings that would have to move). `propose_swap` always emits a clean local 2-change. `propose_drop` always local. `propose_add_constraint` always `mode='full'` (constraints inherently need a re-plan).
+- `applyProposal()` mutates `listings` for `mode='local'` proposals (reschedule writes new `suggested_time`, drop sets `status='imported'`). Throws `PROPOSAL_REQUIRES_FULL_REPLAN` for `mode='full'` — the M2 phase-3 work that wires it to a constrained `planSchedule` re-run lives behind this 409.
+- `schedulingTools.ts` — the 4 propose tools now delegate to proposalsService instead of returning the placeholder.
+- New API: `POST /api/scheduling-proposals/:id/apply` (200 success, 404 not found, 409 already-applied/already-discarded/requires-full-replan).
+- Backend tsc clean.
+
+**Frontend — chat panel (M3)**:
+- `web/src/api.ts` — types and endpoints for sessions / messages / proposals / apply / discard.
+- `web/src/components/SchedulingChat.tsx` (new, ~370 lines) — full chat UI:
+  - Message stream auto-scrolls to bottom; user bubbles right-aligned dark, assistant left-aligned bordered, tool messages collapse into small "Butler checked X" pills (we don't dump raw tool JSON at users).
+  - Proposal cards rendered inline at the position the tool was called. Color-coded by state: blue (proposed), yellow (full mode / conflict), green (applied), gray (discarded).
+  - Apply / Discard buttons fire the corresponding endpoint, optimistic UI flip on click. Apply triggers a parent `onProposalApplied` callback that re-fetches listings so the schedule artifact updates.
+  - Optimistic user bubble while waiting for the agent (1–4s LLM round-trip). Roll-back on failure.
+  - Empty-state shows two prompt suggestions: "Why isn't Newton Suites scheduled?" / "Move Scotts Square to 11am".
+- `App.tsx` integration:
+  - New `chatSessionId` state, new `sidePanel` enum value `'chat'`.
+  - When a scheduling run completes → auto-call `openSchedulingSession(tourId, runId)` and switch the side panel to `chat`.
+  - Toolbar gets a third button alongside Map / Route: "Butler" (lazily opens a session if there isn't one for this tour yet — `getOrOpenSession` is idempotent).
+  - `onProposalApplied` re-fetches listings after every successful Apply.
+- Frontend tsc clean, vite build green (565KB main bundle, gzip 160KB — same chunk-size warning as before, expected).
+
+**End-to-end flow now works**:
+1. User clicks "Start AI scheduling"
+2. Progress bar walks through 6 steps (M1)
+3. On completion: side panel auto-flips to Butler chat
+4. User: "Why isn't X scheduled?" → agent calls get_unscheduled_reason → answers
+5. User: "Move Scotts to 11am" → agent calls propose_reschedule → diff card appears in chat
+6. User clicks Apply → `listings` mutates → schedule artifact list updates
+
+**Still open** (M2 phase-3 + M4 + M5):
+- Real `tryLocalThenFullReplan` for `mode='full'` proposals (currently those Apply with 409).
+- Wire scheduling_runs.step_artifacts.travel into get_travel_time (currently Haversine fallback).
+- M4: Confirm/Unlock state machine on the schedule + gate route generation on `tours.schedule_locked_at`.
+- M5: BUDGET_EXHAUSTED graceful UI surface, copy polish.
+
+---
+
 ## 2026-06-04 — M2 phase-1: scheduling chat agent (read-tool layer + agent loop)
 
 Phase 2B kicks off. The chat-with-Butler conversation surface is built end-to-end on the backend with the **read-only** half of the tool set; write tools (propose_*) are stubbed and ship in M2 phase-2.

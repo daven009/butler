@@ -54,9 +54,10 @@ import { pingExtension, importViaTab, waitForImportResult, storeTokenInExtension
 import { initAuth, getStoredToken, signOut, type ButlerUser } from "./auth"
 import { SignIn } from "./SignIn"
 import { SchedulingProgress } from "./components/SchedulingProgress"
+import { SchedulingChat } from "./components/SchedulingChat"
 
 type View = "workspace" | "conversations" | "route" | "settings"
-type SidePanel = "map" | "route" | "listing" | null
+type SidePanel = "map" | "route" | "listing" | "chat" | null
 type PlanDraft = Pick<ViewingPlan, "title" | "clientName" | "clientWhatsapp" | "brief">
 type TourDraft = Pick<ViewingTour, "title" | "targetDate" | "timeWindow" | "command">
 
@@ -132,6 +133,8 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
   const [schedulingRun, setSchedulingRun] = useState<api.SchedulingRun | null>(null)
   /** Step catalogue from /scheduling-steps; fetched once on mount. */
   const [schedulingSteps, setSchedulingSteps] = useState<api.SchedulingStepDef[]>([])
+  /** Chat session id, set after a successful scheduling run completes. */
+  const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   const [, setTimelineSlots] = useState<TimelineSlot[]>([])
 
   const activePlan = workspacePlans.find((plan) => plan.id === selectedPlanId) ?? null
@@ -352,6 +355,29 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
     setSidePanel((current) => (current === "map" ? null : "map"))
   }
 
+  /**
+   * Open the Butler chat side panel. If we don't yet have a session for
+   * this tour (e.g. user opens a previously-scheduled tour fresh), open
+   * one lazily — the backend's get-or-open semantics mean re-opens are free.
+   */
+  const toggleChat = async () => {
+    setView("workspace")
+    if (sidePanel === "chat") {
+      setSidePanel(null)
+      return
+    }
+    if (!chatSessionId && activeTour) {
+      try {
+        const session = await api.openSchedulingSession(activeTour.id)
+        setChatSessionId(session.id)
+      } catch (e) {
+        console.warn('[chat] could not open session:', e)
+        return
+      }
+    }
+    setSidePanel("chat")
+  }
+
   const startScheduling = async () => {
     setSchedulingStarted(true)
     setSchedulingRunning(true)
@@ -425,6 +451,18 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
                 time: l.suggestedTime!,
               }))
             setTimelineSlots(slots)
+
+            // Auto-open the chat session — PRD §8.6 lock-in: agent appears
+            // *after* the run completes, not before. We get-or-open the
+            // single chat session for this tour so re-running the
+            // scheduler doesn't lose conversation history.
+            try {
+              const session = await api.openSchedulingSession(activeTour.id, runId)
+              setChatSessionId(session.id)
+              setSidePanel('chat')
+            } catch (err) {
+              console.warn('[scheduling] could not open chat session:', err)
+            }
           }
           setSchedulingRunning(false)
           console.log('[scheduling] run', runId, 'finished:', updated.status, updated.result)
@@ -506,6 +544,7 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
             schedulingRunning={schedulingRunning}
             schedulingRun={schedulingRun}
             schedulingSteps={schedulingSteps}
+            chatSessionId={chatSessionId}
             onClosePanel={() => setSidePanel(null)}
             onSelectListing={toggleListing}
             onDeleteListing={deleteListingItem}
@@ -513,9 +552,19 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
             setImportText={setImportText}
             onToggleRoute={toggleRoute}
             onToggleMap={toggleMap}
+            onToggleChat={toggleChat}
             onNewTour={() => setNewTourOpen(true)}
             onStartScheduling={startScheduling}
             onRetryScheduling={retryScheduling}
+            onProposalApplied={async () => {
+              if (!activeTour) return
+              try {
+                const fresh = await api.fetchListings(activeTour.id)
+                if (fresh.length) setListingItems(fresh)
+              } catch (e) {
+                console.warn('[chat] refresh after apply failed:', e)
+              }
+            }}
             onImportListings={(imported) => setListingItems((prev) => {
               const map = new Map(prev.map((l) => [l.id, l]))
               for (const l of imported) map.set(l.id, l)
@@ -810,6 +859,7 @@ function PlanWorkspace({
   schedulingRunning,
   schedulingRun,
   schedulingSteps,
+  chatSessionId,
   onClosePanel,
   onSelectListing,
   onDeleteListing,
@@ -817,10 +867,12 @@ function PlanWorkspace({
   setImportText,
   onToggleRoute,
   onToggleMap,
+  onToggleChat,
   onNewTour,
   onStartScheduling,
   onRetryScheduling,
   onImportListings,
+  onProposalApplied,
 }: {
   activeTour: ViewingTour
   groupedListings: Record<string, Listing[]>
@@ -833,6 +885,7 @@ function PlanWorkspace({
   schedulingRunning: boolean
   schedulingRun: api.SchedulingRun | null
   schedulingSteps: api.SchedulingStepDef[]
+  chatSessionId: string | null
   onClosePanel: () => void
   onSelectListing: (id: string) => void
   onDeleteListing: (id: string) => void
@@ -840,10 +893,12 @@ function PlanWorkspace({
   setImportText: (value: string) => void
   onToggleRoute: () => void
   onToggleMap: () => void
+  onToggleChat: () => void
   onNewTour: () => void
   onStartScheduling: () => void
   onRetryScheduling: () => void
   onImportListings: (listings: Listing[]) => void
+  onProposalApplied: () => void
 }) {
   // Area · Status filter (purely client-side; resets when underlying listings change)
   const [filterOpen, setFilterOpen] = useState(false)
@@ -956,6 +1011,9 @@ function PlanWorkspace({
               <button onClick={onToggleRoute} className={`toolbar-button focus:outline-none focus-visible:ring-2 focus-visible:ring-[#222222] focus-visible:ring-offset-2 ${sidePanel === "route" ? "border-[#222222] bg-[#222222] text-white" : "bg-white"}`}>
                 <Route className="size-4" /> Route
               </button>
+              <button onClick={onToggleChat} className={`toolbar-button focus:outline-none focus-visible:ring-2 focus-visible:ring-[#222222] focus-visible:ring-offset-2 ${sidePanel === "chat" ? "border-[#222222] bg-[#222222] text-white" : "bg-white"}`}>
+                <Bot className="size-4" /> Butler
+              </button>
             </div>
           </div>
 
@@ -1010,8 +1068,10 @@ function PlanWorkspace({
           sidePanel={sidePanel}
           selectedListing={selectedListing}
           activeTourId={activeTour.id}
+          chatSessionId={chatSessionId}
           onClose={onClosePanel}
           onDeleteListing={onDeleteListing}
+          onProposalApplied={onProposalApplied}
         />
       </div>
     </div>
@@ -1586,15 +1646,19 @@ function ContextPanel({
   sidePanel,
   selectedListing,
   activeTourId,
+  chatSessionId,
   onClose,
   onDeleteListing,
+  onProposalApplied,
 }: {
   listings: Listing[]
   sidePanel: SidePanel
   selectedListing: Listing | null
   activeTourId: string
+  chatSessionId: string | null
   onClose: () => void
   onDeleteListing: (id: string) => void
+  onProposalApplied: () => void
 }) {
   return (
     <aside className={`min-h-0 overflow-hidden border-l border-[#e8e8e8] bg-white transition-opacity duration-200 ${sidePanel ? "opacity-100" : "pointer-events-none opacity-0"}`}>
@@ -1602,6 +1666,13 @@ function ContextPanel({
       {sidePanel === "route" && <RoutePanel tourId={activeTourId} onClose={onClose} />}
       {sidePanel === "listing" && selectedListing && <ListingDetailPanel listing={selectedListing} onClose={onClose} onDeleteListing={onDeleteListing} />}
       {sidePanel === "listing" && !selectedListing && <EmptyPanel onClose={onClose} />}
+      {sidePanel === "chat" && chatSessionId && (
+        <SchedulingChat
+          sessionId={chatSessionId}
+          onProposalApplied={onProposalApplied}
+        />
+      )}
+      {sidePanel === "chat" && !chatSessionId && <EmptyPanel onClose={onClose} />}
     </aside>
   )
 }
