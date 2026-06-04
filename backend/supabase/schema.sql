@@ -128,6 +128,54 @@ create table if not exists public.attention_items (
   created_at  timestamptz not null default now()
 );
 
+-- ─── Phase 2B: conversational scheduling refinement ──────────────────────
+-- See migrations/2026-06-04-scheduling-sessions.sql for the full migration.
+
+create table if not exists public.scheduling_sessions (
+  id            uuid primary key default gen_random_uuid(),
+  tour_id       uuid not null references public.tours(id) on delete cascade,
+  user_id       uuid not null references auth.users(id) on delete cascade,
+  run_id        uuid references public.scheduling_runs(id) on delete set null,
+  status        text not null default 'open',
+  finalized_at  timestamptz,
+  prompt_tokens     int not null default 0,
+  completion_tokens int not null default 0,
+  total_turns       int not null default 0,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+create table if not exists public.scheduling_session_messages (
+  id              uuid primary key default gen_random_uuid(),
+  session_id      uuid not null references public.scheduling_sessions(id) on delete cascade,
+  user_id         uuid not null references auth.users(id) on delete cascade,
+  role            text not null check (role in ('system','user','assistant','tool')),
+  content         text,
+  tool_calls      jsonb,
+  tool_call_id    text,
+  tool_name       text,
+  tool_result     jsonb,
+  created_at      timestamptz not null default now()
+);
+
+create table if not exists public.schedule_change_proposals (
+  id              uuid primary key default gen_random_uuid(),
+  session_id      uuid not null references public.scheduling_sessions(id) on delete cascade,
+  user_id         uuid not null references auth.users(id) on delete cascade,
+  message_id      uuid references public.scheduling_session_messages(id) on delete set null,
+  intent_summary  text,
+  mode            text not null default 'local',
+  changes         jsonb not null default '[]'::jsonb,
+  cascade         jsonb not null default '[]'::jsonb,
+  applied_at      timestamptz,
+  discarded_at    timestamptz,
+  created_at      timestamptz not null default now()
+);
+
+-- Lock state for the schedule (M4, §8.6.5).
+alter table public.tours
+  add column if not exists schedule_locked_at timestamptz;
+
 -- Public share-link table. The TOKEN itself is the secret. Anyone with the
 -- token can read the route. We allow lookup-by-token via a SECURITY DEFINER
 -- function (defined further below) so RLS is not in the way.

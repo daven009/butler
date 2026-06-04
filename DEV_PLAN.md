@@ -38,12 +38,30 @@ PRD: BUTLER.md §8.6 (locked 2026-06-03)
 2. **Deploy** (or let me do it): `bash deploy/deploy-source-build.sh`
 3. **Sanity check**: open https://app.hey-alfred.vip, run scheduling on a tour, watch the progress bar walk through the 6 steps.
 
-### M2 — Phase 2B backend skeleton (not started)
+### M2 — Phase 2B backend skeleton 🟡 In progress (read-tool layer shipped)
 
-- `scheduling_sessions` + `scheduling_session_messages` + `schedule_change_proposals` tables
-- OpenAI client wrapper (`backend/src/lib/llm/openaiClient.ts`)
-- Tool router (the 8 tools in PRD §8.6.3 "Tool 接口（中 scope）")
-- Two-stage replan algorithm (`tryLocalThenFullReplan`)
+| Item | Status | Notes |
+|---|---|---|
+| DB migration `2026-06-04-scheduling-sessions.sql` (sessions / messages / proposals / tours.schedule_locked_at + RLS) | ✅ written | **Pending: user must apply in Supabase Dashboard** |
+| `openaiClient.ts` — gpt-4o-mini wrapper + budget caps | ✅ | reads `OPENAI_API_KEY` env, throws fast if missing |
+| `schedulingToolDefs.ts` — 8-tool registry + `buildSystemPrompt` | ✅ | Schemas locked; mid-scope per PRD |
+| `schedulingSessionsRepository.ts` — sessions / messages / proposals CRUD | ✅ | RLS-aware via supabaseForUser |
+| `schedulingTools.ts` — read tools (`get_schedule`, `get_listing_detail`, `get_unscheduled_reason`, `get_travel_time`) | ✅ | All 4 read tools live |
+| `schedulingTools.ts` — propose_* tools (reschedule/swap/drop/add_constraint) | 🟡 placeholder | Returns `PROPOSE_TOOLS_NOT_YET_IMPLEMENTED`; agent prompt told to describe-only. Two-stage replan algorithm coming in M2 phase-2 |
+| `schedulingAgent.ts` — runAgentTurn loop with tool-round cap, budget guard | ✅ | OpenAI tool_call narrowing handled |
+| API: `POST /tours/:tourId/scheduling-sessions` | ✅ | get-or-open semantics |
+| API: `GET /scheduling-sessions/:id/messages` | ✅ | full history |
+| API: `POST /scheduling-sessions/:id/messages` | ✅ | runs one full agent turn synchronously, returns assistant + history |
+| API: `GET /scheduling-sessions/:id/proposals` | ✅ | |
+| API: `POST /scheduling-proposals/:id/discard` | ✅ | |
+| API: `POST /scheduling-proposals/:id/apply` | ⏳ pending | gated on real propose_* impls |
+| Backend `tsc --noEmit` | ✅ exit 0 | |
+| Two-stage replan algorithm (`tryLocalThenFullReplan`) | ⏳ next | M2 phase-2 |
+
+**M2 phase-2 next steps**:
+1. Implement real `propose_reschedule` / `propose_swap` / `propose_drop` / `propose_add_constraint` (creates real `schedule_change_proposals` rows with `mode='local'|'full'` + cascade detection).
+2. Implement `apply` endpoint + service (mutates `listings` based on proposal, marks `applied_at`).
+3. Wire scheduling_runs.step_artifacts.travel into get_travel_time so estimates are real OneMap times not Haversine fallback.
 
 ### M3 — Phase 2B frontend chat UI (not started)
 

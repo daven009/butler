@@ -8,6 +8,54 @@
 
 ---
 
+## 2026-06-04 — M2 phase-1: scheduling chat agent (read-tool layer + agent loop)
+
+Phase 2B kicks off. The chat-with-Butler conversation surface is built end-to-end on the backend with the **read-only** half of the tool set; write tools (propose_*) are stubbed and ship in M2 phase-2.
+
+**DB**:
+- `backend/supabase/migrations/2026-06-04-scheduling-sessions.sql` (idempotent) creates three tables:
+  - `scheduling_sessions` — one open session per (tour, user); tracks token usage + total turns for the §8.6.4 budget cap
+  - `scheduling_session_messages` — full OpenAI-shape message log (system / user / assistant / tool roles, with `tool_calls` jsonb on assistant turns and `tool_call_id` on tool replies)
+  - `schedule_change_proposals` — proposed mutations not yet applied; rows transition via `applied_at` / `discarded_at` (immutable audit trail)
+  - + `tours.schedule_locked_at` column (M4 prep)
+  - + RLS policies on all three new tables (owner_select/insert/update/delete by `auth.uid()`)
+  - + `_bump_updated_at` trigger on sessions
+- **Pending**: user runs the migration in Supabase Dashboard SQL Editor before agent endpoints work.
+
+**Dependencies**:
+- `openai` npm package added.
+- `OPENAI_API_KEY` already provisioned on prod and local `.env` (kept from earlier prep).
+
+**Backend code**:
+- `backend/src/lib/llm/openaiClient.ts` — single `openai` instance, model name lock-in (`gpt-4o-mini`), `SESSION_LIMITS` ({maxPromptTokens: 100K, maxTotalTurns: 30}), `readUsage` shim. Throws fast at module load if `OPENAI_API_KEY` is missing (better surprise at startup than mid-conversation).
+- `backend/src/lib/llm/schedulingToolDefs.ts` — single source of truth for the 8-tool catalogue (4 read + 4 propose). Each tool's `description` field doubles as the LLM's documentation. `buildSystemPrompt` materializes current schedule + unscheduled list inline so the agent's first reply doesn't have to round-trip through `get_schedule`.
+- `backend/src/lib/llm/schedulingTools.ts` — read tool implementations (`get_schedule`, `get_listing_detail`, `get_unscheduled_reason`, `get_travel_time`) + dispatcher. Read tools query the existing repos directly. The 4 propose_* tools return a `PROPOSE_TOOLS_NOT_YET_IMPLEMENTED` placeholder; the system prompt instructs the agent to describe-only when this happens.
+- `backend/src/lib/llm/schedulingAgent.ts` — `runAgentTurn(sessionId, userText)`. One call drives the full user→assistant turn: persist user msg, build OpenAI message array (system prompt rebuilt fresh each turn against current schedule), loop calling chat completions until the model returns plain text (no tool_calls), persist tool messages along the way, bookkeeping for usage. `MAX_TOOL_ROUNDS_PER_TURN = 5` defensively bounds runaway loops. Budget exhaustion → synthetic assistant turn ("reached compute budget") instead of another LLM call. Handles the OpenAI SDK's new `function`-vs-`custom` tool_call type union by narrowing with a type guard.
+- `backend/src/lib/repositories/schedulingSessionsRepository.ts` — RLS-aware CRUD for sessions / messages / proposals. `getOrOpenSession(tourId, runId?)` enforces "at most one open session per (tour, user)". `recordTurnUsage` does read-modify-write because supabase-js doesn't expose atomic increments — fine because turns are sequential.
+
+**API endpoints (all under requireUser)**:
+- `POST /api/tours/:tourId/scheduling-sessions` → get-or-open
+- `GET  /api/scheduling-sessions/:id/messages`  → full history + session
+- `POST /api/scheduling-sessions/:id/messages`  → run one turn (sync, 1–4s typical), returns `{session, messages, assistant}`
+- `GET  /api/scheduling-sessions/:id/proposals` → all proposals (active + applied + discarded)
+- `POST /api/scheduling-proposals/:id/discard`  → flips `discarded_at`
+- (apply endpoint deferred until propose_* tools actually create real proposals)
+
+**What works end-to-end after migration applied**:
+- User can open a session → send "what does my schedule look like?" → agent calls `get_schedule` → returns natural-language summary
+- "Why isn't X scheduled?" → agent calls `get_unscheduled_reason` → explains
+- "How long from A to B?" → agent calls `get_travel_time` (Haversine fallback for now)
+- "Move X to 11am" → agent gets `PROPOSE_TOOLS_NOT_YET_IMPLEMENTED`, apologizes, describes the move it *would* make
+
+**What still needs M2 phase-2 to complete**:
+- Real two-stage replan (`tryLocalThenFullReplan`) creating `schedule_change_proposals` rows
+- `apply` endpoint + service mutating `listings`
+- `get_travel_time` reading from `scheduling_runs.step_artifacts.travel` instead of Haversine
+
+**Next milestone** (M3): frontend chat + artifact double-pane UI to actually surface this conversation.
+
+---
+
 ## 2026-06-03 (later) — M1: Named-step scheduling progress + resumable retry (code complete, awaits DB migration)
 
 Phase 1 of §8.6 is implemented end-to-end. The black-box "0% then 100%" scheduling run is replaced with a 6-step pipeline whose state is persisted per-step on `scheduling_runs`, and a failed run can be resumed without re-doing the steps that already completed.

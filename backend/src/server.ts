@@ -40,6 +40,15 @@ import {
 import { seedTourConversations } from './lib/repositories/conversationsMock';
 import { runWithUser } from './lib/userContext';
 import { STEP_DEFS } from './lib/scheduling/schedulerSteps';
+import {
+  appendMessage,
+  getOrOpenSession,
+  getSession,
+  listMessagesForSession,
+  listProposalsForSession,
+  markProposalDiscarded,
+} from './lib/repositories/schedulingSessionsRepository';
+import { runAgentTurn } from './lib/llm/schedulingAgent';
 import { verifyToken, supabaseAdmin } from './lib/supabase';
 
 const app = express();
@@ -485,6 +494,103 @@ app.post('/api/scheduling-runs/:runId/retry', async (req, res) => {
  */
 app.get('/api/scheduling-steps', (_req, res) => {
   return res.status(200).json({ steps: STEP_DEFS });
+});
+
+/* ─── Scheduling chat sessions (Phase 2B / §8.6.3) ──────────────────────── */
+
+/**
+ * Open or fetch the chat session for a tour. We allow at most one open
+ * session per (tour, user) — repeated calls return the existing one. The
+ * optional `runId` records which scheduling_run spawned the conversation
+ * (for diagnostics when the user complains the agent referred to stale
+ * schedule state).
+ */
+app.post('/api/tours/:tourId/scheduling-sessions', async (req, res) => {
+  const tour = await getTourDetail(req.params.tourId);
+  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
+  const runId = typeof req.body?.runId === 'string' ? req.body.runId : undefined;
+  const session = await getOrOpenSession(req.params.tourId, runId);
+  return res.status(200).json({ session });
+});
+
+/** Full message history for a session (chronological). */
+app.get('/api/scheduling-sessions/:sessionId/messages', async (req, res) => {
+  const session = await getSession(req.params.sessionId);
+  if (!session) return notFound(res, 'SESSION_NOT_FOUND', 'Session not found');
+  const messages = await listMessagesForSession(req.params.sessionId);
+  return res.status(200).json({ session, messages });
+});
+
+/**
+ * Send a user message and run one full agent turn.
+ *
+ * Synchronous-ish: we wait for the LLM round-trip (incl. any tool calls)
+ * and return the final assistant message. Typical latency 1–4s — well
+ * within HTTP timeout. If we ever start streaming this'll switch to SSE.
+ *
+ * Returns:
+ *   { session, messages: [...full updated history...], assistant: <last msg> }
+ *
+ * The full history is included to keep the frontend simple — it can just
+ * replace its local state on every send rather than diff'ing.
+ */
+app.post('/api/scheduling-sessions/:sessionId/messages', async (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+  if (!text) {
+    return sendError(res, 400, 'VALIDATION_FAILED', 'text is required');
+  }
+  const session = await getSession(req.params.sessionId);
+  if (!session) return notFound(res, 'SESSION_NOT_FOUND', 'Session not found');
+
+  try {
+    const assistantMsg = await runAgentTurn(req.params.sessionId, text);
+    const messages = await listMessagesForSession(req.params.sessionId);
+    const refreshedSession = await getSession(req.params.sessionId);
+    return res.status(200).json({
+      session: refreshedSession ?? session,
+      messages,
+      assistant: assistantMsg,
+    });
+  } catch (err) {
+    console.error('[agent] runAgentTurn failed:', err);
+    return sendError(
+      res,
+      500,
+      'AGENT_TURN_FAILED',
+      (err as Error).message || 'Agent turn failed',
+    );
+  }
+});
+
+/**
+ * List all proposals (applied + discarded + pending) for a session. The UI
+ * reads this once on mount and then receives new ones inline as part of
+ * each message-send response.
+ */
+app.get('/api/scheduling-sessions/:sessionId/proposals', async (req, res) => {
+  const session = await getSession(req.params.sessionId);
+  if (!session) return notFound(res, 'SESSION_NOT_FOUND', 'Session not found');
+  const proposals = await listProposalsForSession(req.params.sessionId);
+  return res.status(200).json({ proposals });
+});
+
+/**
+ * Discard a proposal — flips discarded_at without mutating any listings.
+ *
+ * Apply (which DOES mutate listings) is gated on the actual "two-stage
+ * replan" implementation that ships in M2 phase-2; for now apply just
+ * isn't exposed because no propose_* tool actually creates real proposals
+ * yet (they all return a placeholder).
+ */
+app.post('/api/scheduling-proposals/:proposalId/discard', async (req, res) => {
+  try {
+    await markProposalDiscarded(req.params.proposalId);
+    return res.status(204).end();
+  } catch (err) {
+    console.error('[proposal] discard failed:', err);
+    return sendError(res, 500, 'DISCARD_FAILED', (err as Error).message);
+  }
 });
 
 app.get('/api/tours/:tourId/conversations', async (req, res) => {
