@@ -26,20 +26,25 @@ FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
+# Runtime needs only nginx (static frontend) + ca-certificates (TLS to
+# Supabase/OpenAI). Playwright/Chromium were dropped 2026-06-04 — server-side
+# scraping is replaced by the browser extension, so the chromium binary +
+# xvfb/X11/font deps are no longer needed (saves ~600 MB image size).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nginx \
     ca-certificates \
     wget \
-    xvfb \
-    x11-utils \
-    fonts-liberation \
-    fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/backend
 COPY backend/package*.json ./
+# We still install --include=dev because backend ships compiled JS that is
+# loaded with tsx-style ESM at runtime via npm scripts. Playwright is a
+# regular dep, but no chromium binary is downloaded (we removed
+# `npx playwright install`); calls into the scraper module will throw at
+# request time, which is fine because the route is no longer mounted in
+# server.ts (the extension-based import path is the supported flow).
 RUN npm install --include=dev
-RUN npx playwright install --with-deps chromium
 
 COPY backend/ ./
 COPY --from=backend-build /app/backend/dist ./dist
