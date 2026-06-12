@@ -57,7 +57,15 @@ import { SchedulingProgress } from "./components/SchedulingProgress"
 import { SchedulingChat } from "./components/SchedulingChat"
 
 type View = "workspace" | "conversations" | "route" | "settings"
-type SidePanel = "map" | "route" | "listing" | "chat" | null
+/**
+ * Side dock mode. Note: 'route' and 'chat' both render the SAME container
+ * — a two-tab dock that contains both RoutePanel and SchedulingChat side
+ * by side, switching only which tab is in front. This way the user can
+ * flip between "review the route" and "talk to Butler" without unmount/
+ * remount churn (chat history + route map stay alive). Choosing 'route'
+ * vs 'chat' just selects the active tab.
+ */
+type SidePanel = "map" | "listing" | "route" | "chat" | null
 type PlanDraft = Pick<ViewingPlan, "title" | "clientName" | "clientWhatsapp" | "brief">
 type TourDraft = Pick<ViewingTour, "title" | "targetDate" | "timeWindow" | "command">
 
@@ -136,6 +144,9 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
   /** Chat session id, set after a successful scheduling run completes. */
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   const [, setTimelineSlots] = useState<TimelineSlot[]>([])
+  /** Bumped each time we want RoutePanel to re-fetch (e.g. after the
+   *  user Applies a chat proposal — the route ordering should refresh). */
+  const [routeRefreshKey, setRouteRefreshKey] = useState(0)
 
   const activePlan = workspacePlans.find((plan) => plan.id === selectedPlanId) ?? null
   const activeTour = workspaceTours[0] ?? null
@@ -347,7 +358,9 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
 
   const toggleRoute = () => {
     setView("workspace")
-    setSidePanel((current) => (current === "route" ? null : "route"))
+    setSidePanel((current) =>
+      current === "route" || current === "chat" ? null : "route",
+    )
   }
 
   const toggleMap = () => {
@@ -362,7 +375,7 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
    */
   const toggleChat = async () => {
     setView("workspace")
-    if (sidePanel === "chat") {
+    if (sidePanel === "chat" || sidePanel === "route") {
       setSidePanel(null)
       return
     }
@@ -382,25 +395,20 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
     setSchedulingStarted(true)
     setSchedulingRunning(true)
     setSchedulingRun(null)
+    // Open the right dock on the Route tab so the user can watch the
+    // route shape settle as steps progress; once the run finishes we
+    // flip to the Chat tab automatically (see polling block below).
     setSidePanel("route")
 
     if (!activeTour) { setSchedulingRunning(false); return }
 
-    // 1) Seed mock conversations + buyer slots so the scheduler has real input
-    try {
-      const seed = await api.seedTourConversations(activeTour.id)
-      console.log('[scheduling] seed result:', seed)
-      // After seeding, listings on backend now have status='contacting' / availability filled.
-      // Pull the fresh state into the UI immediately so each row shows "Scheduling".
-      try {
-        const seeded = await api.fetchListings(activeTour.id)
-        if (seeded.length) setListingItems(seeded)
-      } catch { /* keep current state */ }
-    } catch (e) {
-      console.warn('[scheduling] seed failed (continuing with whatever state we have):', e)
-    }
+    // Mock conversations + co-agent availability are seeded at listing
+    // IMPORT time (server-side, idempotent) so the data is frozen from
+    // that point on and "Re-run AI scheduling" stays deterministic.
+    // We no longer call /conversations/seed here — that endpoint is
+    // kept around for ad-hoc admin/debug use only.
 
-    // 2) Kick off the real scheduler on backend
+    // Kick off the real scheduler on backend.
     let runId: string | null = null
     try {
       const run = await api.startSchedulingRun(activeTour.id)
@@ -412,9 +420,9 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
       return
     }
 
-    // 3) Poll until completed/failed. We keep polling at 800ms — fast enough
-    //    that the progress bar doesn't feel stuck on a single step, slow
-    //    enough to not hammer the backend.
+    // Poll until completed/failed. We keep polling at 800ms — fast enough
+    // that the progress bar doesn't feel stuck on a single step, slow
+    // enough to not hammer the backend.
     pollSchedulingRun(runId)
   }
 
@@ -545,6 +553,7 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
             schedulingRun={schedulingRun}
             schedulingSteps={schedulingSteps}
             chatSessionId={chatSessionId}
+            routeRefreshKey={routeRefreshKey}
             onClosePanel={() => setSidePanel(null)}
             onSelectListing={toggleListing}
             onDeleteListing={deleteListingItem}
@@ -558,9 +567,26 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
             onRetryScheduling={retryScheduling}
             onProposalApplied={async () => {
               if (!activeTour) return
+              // Trigger the Route panel's "Recomputing route…" indicator
+              // immediately so the user sees something is happening even
+              // before listings come back.
+              setRouteRefreshKey((k) => k + 1)
               try {
                 const fresh = await api.fetchListings(activeTour.id)
-                if (fresh.length) setListingItems(fresh)
+                console.log('[chat] proposal applied, refetched listings:', fresh.length, fresh.map(l => ({ id: l.id, title: l.title, time: l.suggestedTime, status: l.status })))
+                // Force a new array reference even when len matches so React
+                // re-renders. We don't gate on fresh.length anymore: if the
+                // backend returns an empty list, that's also valid state.
+                setListingItems(fresh)
+                const slots: TimelineSlot[] = fresh
+                  .filter((l) => l.status === 'confirmed' && l.suggestedTime)
+                  .map((l) => ({
+                    listingId: l.id,
+                    condoName: l.condo,
+                    date: activeTour?.targetDate ?? defaultTour.targetDate,
+                    time: l.suggestedTime!,
+                  }))
+                setTimelineSlots(slots)
               } catch (e) {
                 console.warn('[chat] refresh after apply failed:', e)
               }
@@ -860,6 +886,7 @@ function PlanWorkspace({
   schedulingRun,
   schedulingSteps,
   chatSessionId,
+  routeRefreshKey,
   onClosePanel,
   onSelectListing,
   onDeleteListing,
@@ -886,6 +913,7 @@ function PlanWorkspace({
   schedulingRun: api.SchedulingRun | null
   schedulingSteps: api.SchedulingStepDef[]
   chatSessionId: string | null
+  routeRefreshKey: number
   onClosePanel: () => void
   onSelectListing: (id: string) => void
   onDeleteListing: (id: string) => void
@@ -938,7 +966,18 @@ function PlanWorkspace({
     <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)]">
       <PlanSidebar tourItems={tourItems} tourStats={tourStats} onNewTour={onNewTour} />
 
-      <div className={`grid min-h-0 transition-[grid-template-columns] duration-200 ${sidePanel ? "xl:grid-cols-[minmax(0,1fr)_400px]" : "xl:grid-cols-[minmax(0,1fr)_0px]"}`}>
+      {/* Side dock width:
+          - 'route' / 'chat': 760px — both render side-by-side (route on
+            the left, chat on the right) so the user can talk to Butler
+            while reviewing the route without switching tabs.
+          - 'map' / 'listing': 560px — single-pane content. */}
+      <div className={`grid min-h-0 transition-[grid-template-columns] duration-200 ${
+        sidePanel === "route" || sidePanel === "chat"
+          ? "xl:grid-cols-[minmax(0,1fr)_760px]"
+          : sidePanel
+          ? "xl:grid-cols-[minmax(0,1fr)_560px]"
+          : "xl:grid-cols-[minmax(0,1fr)_0px]"
+      }`}>
         <section className="flex min-h-0 flex-col overflow-hidden px-5 py-5 lg:px-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-lg font-bold tracking-[-0.2px]">Property Listing</h2>
@@ -1008,10 +1047,10 @@ function PlanWorkspace({
               <button onClick={onToggleMap} className={`toolbar-button focus:outline-none focus-visible:ring-2 focus-visible:ring-[#222222] focus-visible:ring-offset-2 ${sidePanel === "map" ? "border-[#222222] bg-[#222222] text-white" : "bg-white"}`}>
                 <MapIcon className="size-4" /> Map
               </button>
-              <button onClick={onToggleRoute} className={`toolbar-button focus:outline-none focus-visible:ring-2 focus-visible:ring-[#222222] focus-visible:ring-offset-2 ${sidePanel === "route" ? "border-[#222222] bg-[#222222] text-white" : "bg-white"}`}>
+              <button onClick={onToggleRoute} className={`toolbar-button focus:outline-none focus-visible:ring-2 focus-visible:ring-[#222222] focus-visible:ring-offset-2 ${sidePanel === "route" || sidePanel === "chat" ? "border-[#222222] bg-[#222222] text-white" : "bg-white"}`}>
                 <Route className="size-4" /> Route
               </button>
-              <button onClick={onToggleChat} className={`toolbar-button focus:outline-none focus-visible:ring-2 focus-visible:ring-[#222222] focus-visible:ring-offset-2 ${sidePanel === "chat" ? "border-[#222222] bg-[#222222] text-white" : "bg-white"}`}>
+              <button onClick={onToggleChat} className={`toolbar-button focus:outline-none focus-visible:ring-2 focus-visible:ring-[#222222] focus-visible:ring-offset-2 ${sidePanel === "route" || sidePanel === "chat" ? "border-[#222222] bg-[#222222] text-white" : "bg-white"}`}>
                 <Bot className="size-4" /> Butler
               </button>
             </div>
@@ -1069,6 +1108,7 @@ function PlanWorkspace({
           selectedListing={selectedListing}
           activeTourId={activeTour.id}
           chatSessionId={chatSessionId}
+          routeRefreshKey={routeRefreshKey}
           onClose={onClosePanel}
           onDeleteListing={onDeleteListing}
           onProposalApplied={onProposalApplied}
@@ -1530,7 +1570,15 @@ function ListingRow({ listing, active, onSelect, schedulingStarted }: { listing:
 
       <div className="flex flex-col items-center gap-1">
         {schedulingStarted && listing.status === "confirmed" && listing.suggestedTime ? (
-          <p className="whitespace-nowrap text-sm font-bold text-[#6a6a6a]">{listing.suggestedTime}</p>
+          <p className="flex items-center gap-1 whitespace-nowrap text-sm font-bold text-[#6a6a6a]">
+            {listing.suggestedTime}
+            {listing.lockStatus === "user_locked" && (
+              <LockKeyhole
+                className="size-3 text-[#ff385c]"
+                aria-label="Locked — preserved across re-runs"
+              />
+            )}
+          </p>
         ) : (
           <span className={`inline-flex rounded-full border px-3 py-1.5 text-xs font-bold ${displayLabel}`}>
             {statusText}
@@ -1647,6 +1695,7 @@ function ContextPanel({
   selectedListing,
   activeTourId,
   chatSessionId,
+  routeRefreshKey,
   onClose,
   onDeleteListing,
   onProposalApplied,
@@ -1656,23 +1705,80 @@ function ContextPanel({
   selectedListing: Listing | null
   activeTourId: string
   chatSessionId: string | null
+  routeRefreshKey: number
   onClose: () => void
   onDeleteListing: (id: string) => void
   onProposalApplied: () => void
 }) {
+  // 'route' and 'chat' both render the SAME container — a side-by-side
+  // dock with RoutePanel on the left and SchedulingChat on the right.
+  // The user can read the route while talking to Butler without any
+  // tab switching. (Pre-2026-06-04 this was a tabbed dock.)
+  const isDualDock = sidePanel === "route" || sidePanel === "chat"
+
   return (
     <aside className={`min-h-0 overflow-hidden border-l border-[#e8e8e8] bg-white transition-opacity duration-200 ${sidePanel ? "opacity-100" : "pointer-events-none opacity-0"}`}>
       {sidePanel === "map" && <MapPanel listings={panelListings} onClose={onClose} />}
-      {sidePanel === "route" && <RoutePanel tourId={activeTourId} onClose={onClose} />}
-      {sidePanel === "listing" && selectedListing && <ListingDetailPanel listing={selectedListing} onClose={onClose} onDeleteListing={onDeleteListing} />}
+      {sidePanel === "listing" && selectedListing && <ListingDetailPanel listing={selectedListing} onClose={onClose} onDeleteListing={onDeleteListing} onListingsChanged={onProposalApplied} />}
       {sidePanel === "listing" && !selectedListing && <EmptyPanel onClose={onClose} />}
-      {sidePanel === "chat" && chatSessionId && (
-        <SchedulingChat
-          sessionId={chatSessionId}
-          onProposalApplied={onProposalApplied}
-        />
+
+      {isDualDock && (
+        <div className="flex h-full min-h-0 flex-col">
+          {/* Header strip — title + close button. The two child columns
+              render their own per-section headers below. */}
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[#ebebeb] px-3 py-2">
+            <div className="flex items-center gap-2 text-sm font-semibold text-[#222222]">
+              <Bot className="size-4 text-[#ff385c]" />
+              Butler workspace
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="grid size-8 cursor-pointer place-items-center rounded-lg border border-[#dddddd] hover:border-[#222222]"
+              aria-label="Close panel"
+            >
+              <PanelRightClose className="size-4" />
+            </button>
+          </div>
+
+          {/* Side-by-side body — Route on the left (~360px), Chat on
+              the right (fills remaining space). Both children stay
+              mounted whenever the dock is open, so route map / chat
+              history don't reset between toggles. */}
+          <div className="grid min-h-0 flex-1 grid-cols-[360px_minmax(0,1fr)] divide-x divide-[#ebebeb]">
+            <div className="min-h-0 overflow-hidden">
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex shrink-0 items-center gap-2 border-b border-[#ebebeb] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[#6a6a6a]">
+                  <Route className="size-3.5" /> Route
+                </div>
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <RoutePanel tourId={activeTourId} onClose={onClose} hideHeader refreshKey={routeRefreshKey} />
+                </div>
+              </div>
+            </div>
+            <div className="min-h-0 overflow-hidden">
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex shrink-0 items-center gap-2 border-b border-[#ebebeb] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[#6a6a6a]">
+                  <Bot className="size-3.5 text-[#ff385c]" /> Butler chat
+                </div>
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  {chatSessionId ? (
+                    <SchedulingChat
+                      sessionId={chatSessionId}
+                      onProposalApplied={onProposalApplied}
+                      hideHeader
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[#6a6a6a]">
+                      Butler will appear here once the schedule is computed.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
-      {sidePanel === "chat" && !chatSessionId && <EmptyPanel onClose={onClose} />}
     </aside>
   )
 }
@@ -1695,10 +1801,14 @@ function ListingDetailPanel({
   listing,
   onClose,
   onDeleteListing,
+  onListingsChanged,
 }: {
   listing: Listing
   onClose: () => void
   onDeleteListing: (id: string) => void
+  /** Called when this panel mutated something on the listing — parent
+   *  refreshes the workspace listing list + schedule. */
+  onListingsChanged?: () => void
 }) {
   const [messages, setMessages] = useState<import("./domain").ConversationMessage[]>([])
 
@@ -1732,9 +1842,33 @@ function ListingDetailPanel({
             </div>
           )}
 
+          {listing.lockStatus === "user_locked" && (
+            <div className="rounded-2xl border border-[#fde68a] bg-[#fef3c7] p-4">
+              <p className="flex items-center gap-2 text-sm font-bold text-[#92400e]">
+                <LockKeyhole className="size-4" /> Locked at {listing.lockedSlot ?? listing.suggestedTime}
+              </p>
+              <p className="mt-2 text-sm leading-6 text-[#78350f]">
+                You set this slot via Butler. AI scheduling re-runs will not move it.
+              </p>
+              <button
+                onClick={async () => {
+                  try {
+                    await api.unlockListing(listing.id)
+                    onListingsChanged?.()
+                  } catch (e) {
+                    console.warn('[unlock] failed:', e)
+                  }
+                }}
+                className="mt-3 cursor-pointer rounded-lg border border-[#92400e] bg-white px-3 py-2 text-xs font-bold text-[#92400e] hover:bg-[#92400e] hover:text-white"
+              >
+                Unlock — let AI re-plan this listing
+              </button>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3 text-sm">
             <InfoTile icon={Calendar} label="Suggested time" value={listing.suggestedTime ?? "Pending"} />
-            <InfoTile icon={Building2} label="Unit" value={listing.unitNo} />
+            <InfoTile icon={Building2} label="Unit" value={listing.unitNo || "—"} />
             <InfoTile icon={UserRound} label="Co-agent" value={listing.coAgent.name} />
             <InfoTile icon={PhoneCall} label="Phone" value={listing.coAgent.phone} />
           </div>
@@ -1828,22 +1962,49 @@ function MapPanel({ listings: panelListings, onClose }: { listings: Listing[]; o
   )
 }
 
-function RoutePanel({ tourId, onClose }: { tourId: string; onClose: () => void }) {
+function RoutePanel({
+  tourId,
+  onClose,
+  hideHeader = false,
+  refreshKey = 0,
+}: {
+  tourId: string
+  onClose: () => void
+  /** When the dock is shared with the chat tab, the parent renders the
+   * tab strip + close button itself, so we suppress our own header. */
+  hideHeader?: boolean
+  /** Bumping this re-fetches the route. The parent bumps it after a
+   * chat proposal is Applied so the route reflects the new ordering. */
+  refreshKey?: number
+}) {
   const emptyRoute: AgentRoute = { id: "", planId: "", tourId: "", title: "No Route", date: "", stops: [] }
   const [route, setRoute] = useState<AgentRoute>(emptyRoute)
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (!tourId) return
-    api.generateRoute(tourId).then(setRoute).catch((e) => {
-      console.warn('[RoutePanel] generateRoute failed:', e)
-      setRoute(emptyRoute)
-    })
+    setLoading(true)
+    api.generateRoute(tourId)
+      .then((r) => setRoute(r))
+      .catch((e) => {
+        console.warn('[RoutePanel] generateRoute failed:', e)
+        setRoute(emptyRoute)
+      })
+      .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tourId])
+  }, [tourId, refreshKey])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PanelHeader title="Tour route" description="当前 Tour 的路线预览，在右侧面板中查看。" icon={Route} onClose={onClose} />
+      {!hideHeader && (
+        <PanelHeader title="Tour route" description="当前 Tour 的路线预览，在右侧面板中查看。" icon={Route} onClose={onClose} />
+      )}
+      {loading && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-[#ebebeb] bg-[#fef3c7] px-3 py-2 text-xs font-semibold text-[#92400e]">
+          <span className="inline-block size-3 animate-spin rounded-full border-2 border-[#92400e] border-t-transparent" />
+          Recomputing route…
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="rounded-2xl border border-[#eeeeee] bg-[#fafafa] p-4">
           <p className="text-sm font-bold text-[#ff385c]">{route.date}</p>
@@ -1863,7 +2024,7 @@ function RoutePanel({ tourId, onClose }: { tourId: string; onClose: () => void }
               </div>
               <h3 className="mt-3 text-sm font-bold leading-5">{stop.title}</h3>
               <p className="mt-1 text-sm leading-5 text-[#6a6a6a]">{stop.condo} · {stop.address}</p>
-              <p className="mt-3 text-xs font-semibold text-[#222222]">Unit {stop.unitNo} · {stop.coAgentName}</p>
+              <p className="mt-3 text-xs font-semibold text-[#222222]">{[stop.unitNo && `Unit ${stop.unitNo}`, stop.coAgentName].filter(Boolean).join(' · ')}</p>
               <a href={stop.googleMapsUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-full border border-[#dddddd] px-3 py-2 text-xs font-bold hover:border-[#222222]">
                 Google Maps <ExternalLink className="size-3.5" />
               </a>
@@ -2149,7 +2310,7 @@ function Conversations({
         </div>
         <div className="rounded-[20px] bg-white p-4">
           <p className="flex items-center gap-2 text-sm font-bold"><Building2 className="size-4 text-[#ff385c]" /> Listing info</p>
-          <p className="mt-2 text-sm leading-6 text-[#6a6a6a]">Unit {selectedListing.unitNo} · {selectedListing.beds} bed · {selectedListing.price}</p>
+          <p className="mt-2 text-sm leading-6 text-[#6a6a6a]">{[selectedListing.unitNo && `Unit ${selectedListing.unitNo}`, `${selectedListing.beds} bed`, selectedListing.price].filter(Boolean).join(' · ')}</p>
           <p className="mt-2 text-sm leading-6 text-[#6a6a6a]">{selectedListing.summary}</p>
           <a
             href={selectedListing.propertyGuruUrl}
@@ -2231,7 +2392,7 @@ function AgentRouteView() {
                 <div>
                   <h3 className="text-lg font-bold">{stop.title}</h3>
                   <p className="mt-1 text-sm text-[#6a6a6a]">{stop.condo} · {stop.address}</p>
-                  <p className="mt-2 text-sm font-semibold">Unit {stop.unitNo} · {stop.coAgentName} · {stop.coAgentPhone}</p>
+                  <p className="mt-2 text-sm font-semibold">{[stop.unitNo && `Unit ${stop.unitNo}`, stop.coAgentName, stop.coAgentPhone].filter(Boolean).join(' · ')}</p>
                 </div>
                 <a href={stop.googleMapsUrl} target="_blank" rel="noreferrer" className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-full border border-[#dddddd] px-4 py-2 text-sm font-bold hover:border-[#222222]">
                   Google Maps <ExternalLink className="size-4" />
@@ -2278,29 +2439,113 @@ function ClientShareView({ route }: { route: ReturnType<typeof toClientRoute> })
 }
 
 function SettingsView() {
+  // Persona editor — loads server prefs once, shows the server default as
+  // a placeholder when the user hasn't customized. Saving an empty string
+  // means "revert to default" (server stores null).
+  const [serverPersona, setServerPersona] = useState<string | null>(null)
+  const [defaultPersona, setDefaultPersona] = useState<string>('')
+  const [draft, setDraft] = useState<string>('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [savedAt, setSavedAt] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .fetchMyPreferences()
+      .then((p) => {
+        if (cancelled) return
+        setServerPersona(p.butlerPersona)
+        setDefaultPersona(p.defaultButlerPersona)
+        setDraft(p.butlerPersona ?? '')
+        setSavedAt(p.updatedAt)
+      })
+      .catch((e) => {
+        if (!cancelled) setError(`Couldn't load settings: ${(e as Error).message}`)
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const dirty = draft !== (serverPersona ?? '')
+
+  const handleSave = async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const patch = draft.trim() === '' ? null : draft
+      const updated = await api.saveMyPreferences(patch)
+      setServerPersona(updated.butlerPersona)
+      setDefaultPersona(updated.defaultButlerPersona)
+      setDraft(updated.butlerPersona ?? '')
+      setSavedAt(updated.updatedAt)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleResetToDefault = () => {
+    setDraft('')
+  }
+
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
       <section className="rounded-[32px] bg-white p-6 shadow-[rgba(0,0,0,0.02)_0px_0px_0px_1px,rgba(0,0,0,0.04)_0px_2px_6px,rgba(0,0,0,0.1)_0px_4px_8px]">
-        <p className="flex items-center gap-2 text-sm font-bold text-[#ff385c]"><SlidersHorizontal className="size-4" /> AI PA configuration</p>
-        <h1 className="mt-2 text-4xl font-bold tracking-[-0.44px]">Default skills plus your custom rules.</h1>
-        <div className="mt-6 grid gap-4 md:grid-cols-2">
-          {[
-            ["Scheduling policy", "Group same condo together, preserve drive buffers, avoid lunch gap unless requested."],
-            ["Escalation policy", "Pause for tenant handover, price negotiation, incomplete owner access or conflicting instructions."],
-            ["Communication tone", "Concise, polite and professional. AI PA never reveals buyer private notes."],
-            ["Backend adapter", "Settings will be saved through GET/PUT /ai-pa/settings with typed constraints."],
-          ].map(([title, body]) => (
-            <div key={title} className="rounded-[24px] border border-[#eeeeee] p-5">
-              <h2 className="text-lg font-bold">{title}</h2>
-              <p className="mt-2 text-sm leading-6 text-[#6a6a6a]">{body}</p>
-            </div>
-          ))}
-        </div>
-        <label className="mt-6 block text-sm font-bold">Custom instructions</label>
+        <p className="flex items-center gap-2 text-sm font-bold text-[#ff385c]"><SlidersHorizontal className="size-4" /> Butler voice & rules</p>
+        <h1 className="mt-2 text-3xl font-bold tracking-[-0.4px]">Tell Butler how to talk to you.</h1>
+        <p className="mt-3 text-sm leading-6 text-[#6a6a6a]">
+          The text below is the system prompt Butler uses when chatting with you about a tour.
+          Leave it blank to use the default concierge voice.
+        </p>
+
+        <label className="mt-6 block text-sm font-bold">Butler persona</label>
         <textarea
-          className="mt-2 min-h-36 w-full resize-none rounded-[20px] border border-[#dddddd] p-4 text-sm leading-6 outline-none focus:border-[#222222] focus:ring-2 focus:ring-[#222222]/10"
-          defaultValue="For East Coast condos, prefer morning slots. If a co-agent asks for buyer profile, say I will confirm with Dave before sharing. Never disclose client budget in WhatsApp."
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={defaultPersona || 'Loading default…'}
+          rows={14}
+          disabled={loading}
+          className="mt-2 w-full resize-y rounded-[20px] border border-[#dddddd] p-4 font-mono text-xs leading-6 outline-none focus:border-[#222222] focus:ring-2 focus:ring-[#222222]/10 disabled:bg-[#f7f7f7] disabled:text-[#9a9a9a]"
         />
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={loading || saving || !dirty}
+            onClick={() => void handleSave()}
+            className={`inline-flex cursor-pointer items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition-colors ${
+              loading || saving || !dirty
+                ? 'cursor-not-allowed bg-[#dddddd] text-[#9a9a9a]'
+                : 'bg-[#222222] text-white hover:bg-[#000000]'
+            }`}
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            disabled={loading || saving || draft === ''}
+            onClick={handleResetToDefault}
+            className="cursor-pointer rounded-xl border border-[#dddddd] px-4 py-2 text-sm font-semibold text-[#222222] hover:border-[#222222] disabled:cursor-not-allowed disabled:text-[#9a9a9a]"
+          >
+            Reset to default
+          </button>
+          {!dirty && serverPersona == null && !loading && (
+            <span className="text-xs font-semibold text-[#6a6a6a]">Using default voice.</span>
+          )}
+          {!dirty && serverPersona != null && savedAt && (
+            <span className="text-xs font-semibold text-[#15803d]">
+              Saved {new Date(savedAt).toLocaleString()}
+            </span>
+          )}
+          {error && <span className="text-xs font-semibold text-[#c13515]">{error}</span>}
+        </div>
+
+        <p className="mt-6 text-xs leading-5 text-[#6a6a6a]">
+          A few hard rules (length, tool-call etiquette, no UI boilerplate) are appended automatically and can't be overridden — they keep Butler usable inside this app.
+        </p>
       </section>
       <BackendContracts />
     </div>

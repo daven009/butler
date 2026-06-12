@@ -59,6 +59,9 @@ export interface Listing {
   propertyGuruUrl: string
   summary: string
   attentionReason?: string
+  /** M4 lock state — when 'user_locked', re-runs preserve the slot. */
+  lockStatus?: 'user_locked' | null
+  lockedSlot?: string | null
 }
 
 export interface ConversationMessage {

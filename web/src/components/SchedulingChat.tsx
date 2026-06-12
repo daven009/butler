@@ -30,6 +30,8 @@ interface Props {
   onProposalApplied?: () => void
   /** Optional: called when session boots so parent can show "Butler is here" feedback. */
   onSessionReady?: (session: api.SchedulingSession) => void
+  /** When the parent dock already shows a Butler tab/header, hide our own. */
+  hideHeader?: boolean
 }
 
 interface ProposalCardEntry {
@@ -68,7 +70,7 @@ function fmtChange(c: api.ProposalChange): string {
   return c.action
 }
 
-export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady }: Props) {
+export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, hideHeader = false }: Props) {
   const [messages, setMessages] = useState<api.SessionMessage[]>([])
   const [proposalsById, setProposalsById] = useState<Record<string, ProposalCardEntry>>({})
   const [draft, setDraft] = useState('')
@@ -246,15 +248,17 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady }:
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
       {/* Header */}
-      <div className="flex items-center gap-3 border-b border-[#ebebeb] px-4 py-3">
-        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#fff0f3]">
-          <Bot className="size-4 text-[#ff385c]" />
-        </span>
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-[#222222]">Butler</div>
-          <div className="text-xs text-[#717171]">Ask me to refine this schedule.</div>
+      {!hideHeader && (
+        <div className="flex items-center gap-3 border-b border-[#ebebeb] px-4 py-3">
+          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#fff0f3]">
+            <Bot className="size-4 text-[#ff385c]" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-[#222222]">Butler</div>
+            <div className="text-xs text-[#717171]">Ask me to refine this schedule.</div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Message stream */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3">
@@ -384,10 +388,15 @@ function ProposalCard({
       }`}
     >
       <div className="text-xs font-semibold uppercase tracking-wide text-[#717171]">
-        {applied ? 'Applied' : discarded ? 'Discarded' : isFull ? 'Conflict — manual review' : 'Proposed change'}
+        {applied ? 'Applied · Locked' : discarded ? 'Discarded' : isFull ? 'Conflict — manual review' : 'Proposed change'}
       </div>
       {proposal.intentSummary && (
         <div className="mt-1 text-[#222222]">{proposal.intentSummary}</div>
+      )}
+      {applied && (
+        <div className="mt-1 text-[11px] leading-4 text-[#15803d]">
+          Pinned to this slot — AI scheduling re-runs won't move it. Open the listing to unlock.
+        </div>
       )}
       {proposal.changes.length > 0 && (
         <ul className="mt-2 flex flex-col gap-1 font-mono text-xs text-[#222222]">

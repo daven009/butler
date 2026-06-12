@@ -303,6 +303,38 @@ export async function discardProposal(proposalId: string): Promise<void> {
   })
 }
 
+/** M4 — drop the user-lock on a listing so the next scheduling re-run
+ *  can move it again. */
+export async function unlockListing(listingId: string): Promise<void> {
+  await apiFetch(`/listings/${listingId}/unlock`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+}
+
+/* ─── User preferences (Settings → AI rules) ─── */
+
+export interface UserPreferences {
+  /** null means "use default". */
+  butlerPersona: string | null
+  /** Server-known default persona — shown as placeholder in the editor. */
+  defaultButlerPersona: string
+  updatedAt: string | null
+}
+
+export async function fetchMyPreferences(): Promise<UserPreferences> {
+  return apiFetch<UserPreferences>('/me/preferences')
+}
+
+export async function saveMyPreferences(
+  butlerPersona: string | null,
+): Promise<UserPreferences> {
+  return apiFetch<UserPreferences>('/me/preferences', {
+    method: 'PUT',
+    body: JSON.stringify({ butlerPersona }),
+  })
+}
+
 /* ─── Conversations ─── */
 
 export interface Conversation {
