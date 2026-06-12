@@ -25,6 +25,10 @@ import {
 } from '../repositories/schedulingSessionsRepository';
 import { getTourDetail, listListingsByTour } from '../repositories/plansRepository';
 import {
+  DEFAULT_BUTLER_PERSONA,
+  getMyPreferences,
+} from '../repositories/userPreferencesRepository';
+import {
   SCHEDULING_AGENT_MODEL,
   SESSION_LIMITS,
   openai,
@@ -146,7 +150,11 @@ export async function runAgentTurn(
 
   // 3. Build fresh OpenAI message array.
   const ctx = await buildPromptContext(session.tourId);
-  const systemPrompt = buildSystemPrompt(ctx);
+  // Pull user-customized persona; fall back to the default Butler voice.
+  const prefs = await getMyPreferences().catch(() => ({ butlerPersona: null }));
+  const persona =
+    (prefs.butlerPersona && prefs.butlerPersona.trim()) || DEFAULT_BUTLER_PERSONA;
+  const systemPrompt = buildSystemPrompt({ ...ctx, persona });
   const history = await listMessagesForSession(sessionId);
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },

@@ -113,7 +113,7 @@ export const SCHEDULING_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'propose_reschedule',
       description:
-        'Propose moving a listing to a new start time. The system will first try to fit the move locally (only this listing changes); if that conflicts, it will fall back to a full re-plan and report any cascading changes. THIS DOES NOT APPLY THE CHANGE — it produces a proposal the user must explicitly approve in the UI.',
+        'Propose moving a listing to a new start time. Use this when the destination slot is FREE. If another scheduled listing already occupies that slot, prefer `propose_swap` instead — `propose_reschedule` will flag the move as a conflict and force manual review. THIS DOES NOT APPLY THE CHANGE — it produces a proposal the user must explicitly approve in the UI.',
       parameters: {
         type: 'object',
         properties: {
@@ -137,7 +137,7 @@ export const SCHEDULING_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'propose_swap',
       description:
-        'Propose swapping the time slots of two scheduled listings. Both must currently be in the schedule. THIS DOES NOT APPLY — it produces a proposal.',
+        'Propose swapping the time slots of two scheduled listings. Use this when the user wants to move listing A into a slot currently held by listing B (B will inherit A\'s old slot in return). Both must currently be in the schedule. THIS DOES NOT APPLY — it produces a proposal.',
       parameters: {
         type: 'object',
         properties: {
@@ -203,8 +203,13 @@ export const SCHEDULING_TOOLS: ChatCompletionTool[] = [
  * Build the system prompt sent on every assistant turn. Schedule + tour
  * context is materialized inline so the LLM doesn't have to call get_schedule
  * before its very first reply (saves a round-trip).
+ *
+ * `persona` is the user-customizable voice block (Settings → AI rules).
+ * The caller resolves it from user_preferences.butler_persona, falling
+ * back to DEFAULT_BUTLER_PERSONA when the user hasn't customized it.
  */
 export function buildSystemPrompt(args: {
+  persona: string;
   buyerName: string;
   targetDate: string;
   totalListings: number;
@@ -214,7 +219,7 @@ export function buildSystemPrompt(args: {
   unscheduledList: string;
 }): string {
   return [
-    "You are Butler, an AI assistant helping a Singapore property agent refine a viewing tour they just generated. The optimizer already produced a draft schedule. Your job: answer questions about it in plain English, and when the user wants something changed, use the propose_* tools to draft the change.",
+    args.persona,
     "",
     "TOUR CONTEXT:",
     `- Buyer: ${args.buyerName}`,
@@ -227,13 +232,20 @@ export function buildSystemPrompt(args: {
     "UNSCHEDULED:",
     args.unscheduledList || "(none)",
     "",
-    "RULES:",
-    "- Be concise. Singapore property agents are busy.",
-    "- All time changes go through propose_* tools. NEVER claim a change is applied unless the user has clicked Apply in the UI.",
-    "- When propose_reschedule produces a `cascade` (other listings had to move so yours could fit), explicitly list every cascading change before asking for approval.",
-    "- Before proposing changes the user did not request, ask first.",
-    "- Reply in the language the user writes in. Default English; switch to Chinese (Simplified) if they do.",
-    "- Don't second-guess the optimizer's geographic clustering unless the user asks. The cluster groupings reflect real travel times.",
-    "- For 'why X at Y time?' questions, prefer get_unscheduled_reason or get_travel_time + get_schedule over guessing.",
+    "HARD RULES (override anything in your persona that conflicts):",
+    "- Length: 1–2 short sentences per turn. No bullet lists. No numbered steps. No markdown bold/italics.",
+    "- After issuing a propose_* tool call, your FOLLOW-UP message must be at most one short sentence (e.g. \"Drafted — review the card.\" / \"已起草，请确认卡片。\"). Never re-list the changes; the proposal card shows them.",
+    "- Never say \"click Apply\", \"in the UI\", \"as an AI\", \"I am an assistant\", or similar UI/role boilerplate.",
+    "- All time changes go through propose_* tools. Never claim a change is applied unless the user clicked Apply.",
+    "- Reply in the language the user writes in (English default; Simplified Chinese if they do).",
+    "",
+    "TOOL SELECTION:",
+    "- User wants to move A to a slot held by B → call propose_swap(A, B) in ONE tool call.",
+    "- Destination slot is empty → propose_reschedule.",
+    "- Remove from tour → propose_drop.",
+    "- For 'why X at Y?' questions → use get_unscheduled_reason or get_travel_time + get_schedule, don't guess.",
+    "",
+    "USER CONFIRMATION FLOW:",
+    "- If you described a plan in plain text and the user replies 'yes' / 'go ahead' / 'confirm' / '是' / '确认', IMMEDIATELY call the matching propose_* tool. Don't just acknowledge.",
   ].join("\n");
 }
