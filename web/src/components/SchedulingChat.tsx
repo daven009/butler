@@ -271,7 +271,7 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady }:
             if (it.kind === 'user') {
               return (
                 <li key={it.key} className="flex justify-end">
-                  <div className="max-w-[85%] rounded-2xl rounded-br-md bg-[#222222] px-3.5 py-2 text-sm text-white">
+                  <div className="max-w-[85%] rounded-[6px] rounded-br-md bg-[#222222] px-3.5 py-2 text-sm text-white">
                     {it.text}
                   </div>
                 </li>
@@ -280,7 +280,7 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady }:
             if (it.kind === 'assistant') {
               return (
                 <li key={it.key} className="flex justify-start">
-                  <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-md border border-[#ebebeb] bg-white px-3.5 py-2 text-sm text-[#222222]">
+                  <div className="max-w-[85%] whitespace-pre-wrap rounded-[6px] rounded-bl-md border border-[#ebebeb] bg-white px-3.5 py-2 text-sm text-[#222222]">
                     {it.text}
                   </div>
                 </li>
@@ -315,7 +315,7 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady }:
             </li>
           )}
           {error && (
-            <li className="rounded-xl border border-[#ffd5de] bg-[#fff5f7] px-3 py-2 text-xs text-[#c13515]">
+            <li className="rounded-[6px] border border-[#ffd5de] bg-[#fff5f7] px-3 py-2 text-xs text-[#c13515]">
               {error}
             </li>
           )}
@@ -336,13 +336,13 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady }:
             }}
             placeholder="Ask Butler to adjust the schedule…"
             rows={1}
-            className="min-h-[40px] flex-1 resize-none rounded-xl border border-[#dddddd] bg-white px-3 py-2 text-sm text-[#222222] outline-none focus:border-[#222222]"
+            className="min-h-[40px] flex-1 resize-none rounded-[6px] border border-[#dddddd] bg-white px-3 py-2 text-sm text-[#222222] outline-none focus:border-[#222222]"
           />
           <button
             type="button"
             disabled={sending || !draft.trim()}
             onClick={() => void handleSend()}
-            className={`flex h-10 w-10 flex-none items-center justify-center rounded-xl text-white transition-colors ${
+            className={`flex h-10 w-10 flex-none items-center justify-center rounded-[6px] text-white transition-colors ${
               sending || !draft.trim() ? 'cursor-not-allowed bg-[#dddddd]' : 'bg-[#ff385c] hover:bg-[#e00b41]'
             }`}
           >
@@ -373,7 +373,7 @@ function ProposalCard({
 
   return (
     <div
-      className={`max-w-[90%] rounded-2xl border p-3 text-sm ${
+      className={`max-w-[90%] rounded-[6px] border p-3 text-sm ${
         applied
           ? 'border-[#d7f4df] bg-[#f3fbf5]'
           : discarded
@@ -392,7 +392,7 @@ function ProposalCard({
       {proposal.changes.length > 0 && (
         <ul className="mt-2 flex flex-col gap-1 font-mono text-xs text-[#222222]">
           {proposal.changes.map((c, i) => (
-            <li key={i} className="rounded-lg bg-white/60 px-2 py-1">
+            <li key={i} className="rounded-[6px] bg-white/60 px-2 py-1">
               {fmtChange(c)}
             </li>
           ))}
@@ -405,7 +405,7 @@ function ProposalCard({
           </div>
           <ul className="mt-1 flex flex-col gap-1 font-mono text-xs text-[#9a3412]">
             {proposal.cascade.map((c, i) => (
-              <li key={i} className="rounded-lg bg-white/60 px-2 py-1">
+              <li key={i} className="rounded-[6px] bg-white/60 px-2 py-1">
                 {fmtChange(c)}
               </li>
             ))}
@@ -421,7 +421,7 @@ function ProposalCard({
             type="button"
             disabled={!!pendingAction}
             onClick={onApply}
-            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#222222] px-3 py-1.5 text-xs font-semibold text-white ${
+            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-[6px] bg-[#222222] px-3 py-1.5 text-xs font-semibold text-white ${
               pendingAction ? 'opacity-60' : 'hover:bg-[#000000]'
             }`}
           >
@@ -432,7 +432,7 @@ function ProposalCard({
             type="button"
             disabled={!!pendingAction}
             onClick={onDiscard}
-            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-[#dddddd] px-3 py-1.5 text-xs font-semibold text-[#222222] ${
+            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-[6px] border border-[#dddddd] px-3 py-1.5 text-xs font-semibold text-[#222222] ${
               pendingAction ? 'opacity-60' : 'hover:bg-[#f7f7f7]'
             }`}
           >
@@ -447,7 +447,7 @@ function ProposalCard({
             type="button"
             disabled={!!pendingAction}
             onClick={onDiscard}
-            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-[#dddddd] bg-white px-3 py-1.5 text-xs font-semibold text-[#222222] hover:bg-[#f7f7f7]"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-[6px] border border-[#dddddd] bg-white px-3 py-1.5 text-xs font-semibold text-[#222222] hover:bg-[#f7f7f7]"
           >
             <X className="size-3" /> Dismiss
           </button>

@@ -465,6 +465,36 @@ export async function createPlan(input: Omit<ViewingPlan, 'id'>): Promise<Viewin
   return rowToPlan(data as PlanRow);
 }
 
+export async function updatePlan(planId: string, input: Omit<ViewingPlan, 'id'>): Promise<ViewingPlan | undefined> {
+  if (!isUuid(planId)) return undefined;
+  const { data, error } = await db()
+    .from('plans')
+    .update({
+      title: input.title,
+      client_name: input.clientName,
+      client_whatsapp: input.clientWhatsapp ?? null,
+      brief: input.brief ?? '',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', planId)
+    .select()
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToPlan(data as PlanRow) : undefined;
+}
+
+export async function removePlan(planId: string): Promise<boolean> {
+  if (!isUuid(planId)) return false;
+  const { data, error } = await db()
+    .from('plans')
+    .delete()
+    .eq('id', planId)
+    .select('id')
+    .maybeSingle();
+  if (error) throw error;
+  return Boolean(data);
+}
+
 /* ─── Tours CRUD ─────────────────────────────────────────────────────────── */
 
 export async function listToursByPlan(planId: string): Promise<ViewingTour[]> {
@@ -508,6 +538,16 @@ export async function createTourForPlan(
     .single();
   if (error) throw error;
   return rowToTour(data as TourRow);
+}
+
+export async function removeTour(tourId: string): Promise<boolean> {
+  if (!isUuid(tourId)) return false;
+  const { error, count } = await db()
+    .from('tours')
+    .delete({ count: 'exact' })
+    .eq('id', tourId);
+  if (error) throw error;
+  return (count ?? 0) > 0;
 }
 
 /* ─── Listings CRUD (under Tour) ─────────────────────────────────────────── */

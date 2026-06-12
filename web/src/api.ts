@@ -59,7 +59,16 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     console.error(`[api] ✗ ${method} ${url} body:`, err)
     throw new Error(err?.error?.message || `API Error ${res.status}`)
   }
-  const json = await res.json()
+  if (res.status === 204) {
+    console.log(`[api] ✓ ${method} ${url} no content`)
+    return undefined as T
+  }
+  const text = await res.text()
+  if (!text) {
+    console.log(`[api] ✓ ${method} ${url} empty body`)
+    return undefined as T
+  }
+  const json = JSON.parse(text)
   console.log(`[api] ✓ ${method} ${url} json keys:`, Object.keys(json || {}))
   return json
 }
@@ -79,6 +88,18 @@ export async function createPlan(input: Omit<ViewingPlan, 'id'>): Promise<Viewin
   return data.plan
 }
 
+export async function updatePlan(planId: string, input: Omit<ViewingPlan, 'id'>): Promise<ViewingPlan> {
+  const data = await apiFetch<{ plan: ViewingPlan }>(`/plans/${planId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+  return data.plan
+}
+
+export async function deletePlan(planId: string): Promise<void> {
+  await apiFetch(`/plans/${planId}`, { method: 'DELETE' })
+}
+
 /* ─── Tours ─── */
 
 export async function fetchToursByPlan(planId: string): Promise<ViewingTour[]> {
@@ -95,6 +116,10 @@ export async function createTour(
     body: JSON.stringify(input),
   })
   return data.tour
+}
+
+export async function deleteTour(tourId: string): Promise<void> {
+  await apiFetch(`/tours/${tourId}`, { method: 'DELETE' })
 }
 
 /* ─── Listings ─── */

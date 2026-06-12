@@ -33,9 +33,12 @@ import {
   listToursByPlan,
   pgToBusinessListing,
   removeListingFromTour,
+  removePlan,
+  removeTour,
   shareRoute,
   startSchedulingRun,
   retrySchedulingRun,
+  updatePlan,
 } from './lib/repositories/plansRepository';
 import { seedTourConversations } from './lib/repositories/conversationsMock';
 import { runWithUser } from './lib/userContext';
@@ -132,6 +135,28 @@ app.post('/api/plans', async (req, res) => {
   return res.status(201).json({ plan });
 });
 
+app.patch('/api/plans/:planId', async (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+  const { title, clientName, clientWhatsapp, brief } = req.body;
+  if (!title || !clientName) {
+    return sendError(res, 400, 'VALIDATION_FAILED', 'title and clientName are required');
+  }
+  const plan = await updatePlan(req.params.planId, {
+    title,
+    clientName,
+    clientWhatsapp,
+    brief: brief || '',
+  });
+  if (!plan) return notFound(res, 'PLAN_NOT_FOUND', 'Plan not found');
+  return res.status(200).json({ plan });
+});
+
+app.delete('/api/plans/:planId', async (req, res) => {
+  const ok = await removePlan(req.params.planId);
+  if (!ok) return notFound(res, 'PLAN_NOT_FOUND', 'Plan not found');
+  return res.status(204).send();
+});
+
 app.get('/api/plans/:planId/tours', async (req, res) => {
   const plan = await getPlanById(req.params.planId);
   if (!plan) return notFound(res, 'PLAN_NOT_FOUND', 'Plan not found');
@@ -158,6 +183,12 @@ app.post('/api/plans/:planId/tours', async (req, res) => {
     command: typeof command === 'string' ? command : '',
   });
   return res.status(201).json({ tour });
+});
+
+app.delete('/api/tours/:tourId', async (req, res) => {
+  const ok = await removeTour(req.params.tourId);
+  if (!ok) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
+  return res.status(204).send();
 });
 
 // ── Listings ───────────────────────────────────────────────────────────────
