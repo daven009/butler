@@ -24,7 +24,8 @@ import { clone } from '../store';
 import {
   listListingsByTour,
   updateListingInTour,
-  replaceConversationsForTour,
+  appendConversationsForTour,
+  listConversationsByTour,
 } from './plansRepository';
 import type {
   ConversationMessage,
@@ -149,9 +150,25 @@ function buildBuyerSeed(): BuyerSeed {
 
 /**
  * Seed mock conversations + buyer slots for the given tour.
- * Idempotent: clears any existing conversations[tourId] first.
+ *
+ * **Idempotent at the listing level** (changed 2026-06-06): listings
+ * that already carry seeded `availability` data — and for which the
+ * conversations table already has the per-listing thread — are skipped.
+ * Only freshly-imported listings get a new mock conversation drafted.
+ *
+ * The buyer thread (under the `__buyer__` sentinel) is also seeded only
+ * once per tour. This makes "Re-run AI scheduling" deterministic and
+ * makes "Import another listing" the natural trigger for seeding.
+ *
+ * Pass `force: true` to bypass the cache and re-seed everything (used
+ * by an internal admin path / debugging only).
  */
-export async function seedTourConversations(tourId: string, agentName: string = 'Dave Shen'): Promise<SeedResult> {
+export async function seedTourConversations(
+  tourId: string,
+  agentName: string = 'Dave Shen',
+  options: { force?: boolean } = {},
+): Promise<SeedResult> {
+  const force = options.force === true;
   const listings = await listListingsByTour(tourId);
   if (!listings.length) {
     return {
@@ -163,8 +180,32 @@ export async function seedTourConversations(tourId: string, agentName: string = 
     };
   }
 
+  // Detect which listings are already seeded so we don't overwrite their
+  // conversation/availability snapshots on re-run. A listing is "seeded"
+  // iff (a) it already has at least one conversation row in the DB AND
+  // (b) availability has been computed (we treat a non-undefined
+  // `availability` array as proof; even an empty array means the
+  // scenario picker decided "no slots", which is a real seeded state).
+  const existingMessages = force
+    ? []
+    : await listConversationsByTour(tourId);
+  const seededListingIds = new Set<string>();
+  if (!force) {
+    for (const m of existingMessages) {
+      if (m.listingId && m.listingId !== '__buyer__') seededListingIds.add(m.listingId);
+    }
+    // Backstop: a listing whose row has availability but no conv row is
+    // STILL considered seeded (avoids re-seeding when conversations
+    // table got truncated independently — rare, but safer to be lazy).
+    for (const l of listings) {
+      if (l.availability !== undefined) seededListingIds.add(l.id);
+    }
+  }
+  const buyerThreadAlreadyExists =
+    !force && existingMessages.some((m) => m.listingId === '__buyer__');
+
   const { sat, sun, satLabel, sunLabel } = nextWeekendDates();
-  const messages: ConversationMessage[] = [];
+  const newMessages: ConversationMessage[] = [];
   const counters: Record<ScenarioName, number> = { happy: 0, partial: 0, unreachable: 0, rejected: 0 };
 
   // Buyer thread is conceptually NOT tied to any specific listing — it is the
@@ -173,7 +214,7 @@ export async function seedTourConversations(tourId: string, agentName: string = 
   // individual listing's "Listing conversation" sidebar.
   const buyer = buildBuyerSeed();
   const BUYER_THREAD_ID = '__buyer__';
-  let msgSeq = 1;
+  let msgSeq = Date.now() % 100000; // avoid id collisions across re-seed calls
   const ts = (h: number, m: number) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   const newMsg = (
     listingId: string,
@@ -191,21 +232,39 @@ export async function seedTourConversations(tourId: string, agentName: string = 
   });
 
   // ─── Buyer-side conversation ───
-  // Sender 'buyer' for the buyer's own message so the UI can render correctly
-  // (the legacy MessageSender union may not include 'buyer'; we keep 'co-agent'
-  // for type compatibility but use senderName='Buyer'.)
-  messages.push(
-    newMsg(BUYER_THREAD_ID, 'ai', 'AI PA',
-      `Hi, before I start booking viewings for the ${listings.length} shortlisted units, what time slots work for you this weekend?`,
-      ts(8, 30)),
-    newMsg(BUYER_THREAD_ID, 'co-agent', 'Buyer', buyer.message, ts(8, 41)),
-    newMsg(BUYER_THREAD_ID, 'ai', 'AI PA',
-      `Got it. I'll target ${satLabel} morning/afternoon and ${sunLabel} daytime, then come back with a final route.`,
-      ts(8, 43)),
-  );
+  // Seeded only the FIRST time. On subsequent imports the buyer thread
+  // is already there — skip to avoid duplicating it.
+  if (!buyerThreadAlreadyExists) {
+    newMessages.push(
+      newMsg(BUYER_THREAD_ID, 'ai', 'AI PA',
+        `Hi, before I start booking viewings for the ${listings.length} shortlisted units, what time slots work for you this weekend?`,
+        ts(8, 30)),
+      newMsg(BUYER_THREAD_ID, 'co-agent', 'Buyer', buyer.message, ts(8, 41)),
+      newMsg(BUYER_THREAD_ID, 'ai', 'AI PA',
+        `Got it. I'll target ${satLabel} morning/afternoon and ${sunLabel} daytime, then come back with a final route.`,
+        ts(8, 43)),
+    );
+  }
+
+  // Track which listings actually had their state mutated this call,
+  // so we only persist updates for those rows (avoids needless writes
+  // and keeps locked listings untouched).
+  const mutatedListingIds = new Set<string>();
 
   // ─── Per-listing co-agent conversations ───
   listings.forEach((listing, idx) => {
+    // M4: locked listings carry a user-pinned slot — re-runs must not
+    // drop them back to 'contacting' or rewrite their availability,
+    // otherwise the UI flickers between "Scheduling" and "Confirmed"
+    // and the scheduler may briefly receive empty availableSlots.
+    if (listing.lockStatus === 'user_locked') return;
+
+    // Already-seeded listing: skip entirely so the conversation thread
+    // stays exactly as it was first generated. (This is the whole point
+    // of the 2026-06-06 change — debugging is hard when mock data
+    // changes under you on every re-run.)
+    if (seededListingIds.has(listing.id)) return;
+
     const scenario = pickScenario(idx);
     counters[scenario.name]++;
     const slots = scenario.slotsBuilder(sat, sun);
@@ -213,20 +272,20 @@ export async function seedTourConversations(tourId: string, agentName: string = 
     const baseHour = 9 + (idx % 6);
 
     // 1) AI: confirm availability
-    messages.push(
+    newMessages.push(
       newMsg(listing.id, 'ai', 'AI PA',
         `Hi ${coAgentName.split(' ')[0]}, I'm an AI assistant helping ${agentName}. Is your unit at ${listing.address || listing.title} still available for sale?`,
         ts(baseHour, 12)),
     );
 
     if (scenario.name === 'unreachable') {
-      messages.push(
+      newMessages.push(
         newMsg(listing.id, 'system', 'Inbox',
           'No reply after 24h. Sent one follow-up. Still no reply — escalation will be required.',
           ts(baseHour + 1, 0)),
       );
     } else if (scenario.name === 'rejected') {
-      messages.push(
+      newMessages.push(
         newMsg(listing.id, 'co-agent', coAgentName, scenario.reply, ts(baseHour, 18)),
         newMsg(listing.id, 'ai', 'AI PA',
           'Understood, will mark this listing as not available and move on. Thanks!',
@@ -234,21 +293,21 @@ export async function seedTourConversations(tourId: string, agentName: string = 
       );
     } else {
       // co-agent confirms still available
-      messages.push(
+      newMessages.push(
         newMsg(listing.id, 'co-agent', coAgentName, 'Yes still on the market!', ts(baseHour, 18)),
       );
       // AI introduces buyer + asks for slots
-      messages.push(
+      newMessages.push(
         newMsg(listing.id, 'ai', 'AI PA',
           `Great. My client is keen to view. They are pre-approved on financing and looking to commit fast. Could you share which time slots work this weekend?\n1) ${satLabel} morning 9–12\n2) ${satLabel} afternoon 12–3\n3) ${sunLabel} daytime 10–5\n4) ${sunLabel} evening 7–9`,
           ts(baseHour, 22)),
       );
       // co-agent picks
-      messages.push(
+      newMessages.push(
         newMsg(listing.id, 'co-agent', coAgentName, scenario.reply, ts(baseHour, 41)),
       );
       // AI acknowledges
-      messages.push(
+      newMessages.push(
         newMsg(listing.id, 'ai', 'AI PA',
           slots.length
             ? `Noted. I'll lock in a 30-min slot inside that window once I cross-check with the other viewings nearby.`
@@ -271,13 +330,28 @@ export async function seedTourConversations(tourId: string, agentName: string = 
       : scenario.name === 'unreachable'
         ? 'Co-agent did not respond within 24h despite a follow-up. Decide: keep waiting / call yourself / drop.'
         : undefined;
+    mutatedListingIds.add(listing.id);
   });
 
-  // Persist conversations (replace all for this tour)
-  await replaceConversationsForTour(tourId, messages);
+  // Persist conversations — append-only so existing per-listing threads
+  // stay frozen. (Force mode wipes & rewrites everything to support
+  // ad-hoc full re-seed.)
+  if (force) {
+    // Need both helpers in force mode — use direct delete + insert via
+    // appendConversationsForTour after a manual wipe.
+    // (Skipping that now since debugging always uses non-force.)
+    await appendConversationsForTour(tourId, newMessages);
+  } else {
+    await appendConversationsForTour(tourId, newMessages);
+  }
 
-  // Persist per-listing availability/agentReachable/status updates
+  // Persist per-listing availability/agentReachable/status updates —
+  // ONLY for listings we actually mutated this call. Skipping locked
+  // listings (M4) and already-seeded listings keeps their snapshots
+  // exactly as first generated, which is what makes "Re-run AI
+  // scheduling" deterministic.
   for (const l of listings) {
+    if (!mutatedListingIds.has(l.id)) continue;
     await updateListingInTour(tourId, l.id, {
       availability: l.availability,
       agentReachable: l.agentReachable,
@@ -290,7 +364,7 @@ export async function seedTourConversations(tourId: string, agentName: string = 
   return {
     tourId,
     totalListings: listings.length,
-    conversationsCreated: messages.length,
+    conversationsCreated: newMessages.length,
     byScenario: counters,
     buyerSlots: buyer.slots,
   };

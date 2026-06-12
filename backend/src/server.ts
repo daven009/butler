@@ -38,7 +38,7 @@ import {
   retrySchedulingRun,
 } from './lib/repositories/plansRepository';
 import { seedTourConversations } from './lib/repositories/conversationsMock';
-import { runWithUser } from './lib/userContext';
+import { runWithUser, getCurrentJwt } from './lib/userContext';
 import { STEP_DEFS } from './lib/scheduling/schedulerSteps';
 import {
   appendMessage,
@@ -50,7 +50,12 @@ import {
 } from './lib/repositories/schedulingSessionsRepository';
 import { runAgentTurn } from './lib/llm/schedulingAgent';
 import { applyProposal } from './lib/scheduling/proposalsService';
-import { verifyToken, supabaseAdmin } from './lib/supabase';
+import {
+  DEFAULT_BUTLER_PERSONA,
+  getMyPreferences,
+  upsertMyPreferences,
+} from './lib/repositories/userPreferencesRepository';
+import { verifyToken, supabaseAdmin, supabaseForUser } from './lib/supabase';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -300,6 +305,17 @@ app.post('/api/tours/:tourId/import', async (req, res) => {
       else added++;
     }
 
+    // Seed mock co-agent conversations + availability for any newly
+    // imported listings. Idempotent — already-seeded listings stay
+    // frozen, so re-imports / re-runs don't perturb mock data. Done
+    // here (rather than at scheduling time) so the data is stable from
+    // the moment the user imports a listing.
+    try {
+      await seedTourConversations(req.params.tourId);
+    } catch (e) {
+      console.warn('[tour-import] seed-after-import failed (non-fatal):', (e as Error).message);
+    }
+
     const finalListings = await listListingsByTour(req.params.tourId);
 
     console.log('[tour-import] ✓ done', {
@@ -419,6 +435,15 @@ app.post('/api/tours/:tourId/import-from-extension', async (req, res) => {
       await addListingToTourWeb(req.params.tourId, listing);
       if (existing) merged++;
       else added++;
+    }
+
+    // Seed mock co-agent conversations + availability for any newly
+    // imported listings. Idempotent — already-seeded listings stay
+    // frozen so re-imports / re-runs don't perturb mock data.
+    try {
+      await seedTourConversations(req.params.tourId);
+    } catch (e) {
+      console.warn('[ext-import] seed-after-import failed (non-fatal):', (e as Error).message);
     }
 
     const finalListings = await listListingsByTour(req.params.tourId);
@@ -613,11 +638,73 @@ app.post('/api/scheduling-proposals/:proposalId/apply', async (req, res) => {
     if (
       msg === 'PROPOSAL_ALREADY_APPLIED' ||
       msg === 'PROPOSAL_ALREADY_DISCARDED' ||
-      msg === 'PROPOSAL_REQUIRES_FULL_REPLAN'
+      msg === 'PROPOSAL_REQUIRES_FULL_REPLAN' ||
+      msg === 'PROPOSAL_APPLY_NO_ROWS'
     ) {
       return sendError(res, 409, msg, msg.replace(/_/g, ' ').toLowerCase());
     }
     return sendError(res, 500, 'APPLY_FAILED', msg);
+  }
+});
+
+/**
+ * Unlock a listing — drops `lock_status` so the next scheduling re-run
+ * can move it again. The listing's `suggested_time` is preserved for
+ * read consistency; the next planSchedule call decides what to do.
+ */
+app.post('/api/listings/:listingId/unlock', async (req, res) => {
+  try {
+    const c = supabaseForUser(getCurrentJwt());
+    const { data, error } = await c
+      .from('listings')
+      .update({ lock_status: null, locked_slot: null, locked_at: null })
+      .eq('id', req.params.listingId)
+      .select('id');
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      return notFound(res, 'LISTING_NOT_FOUND', 'Listing not found');
+    }
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('[listing] unlock failed:', (err as Error).message);
+    return sendError(res, 500, 'UNLOCK_FAILED', (err as Error).message);
+  }
+});
+
+/**
+ * User preferences (Settings → AI rules). Currently just the Butler
+ * persona; one row per user, returns default + saved value separately
+ * so the UI can show the default as a placeholder.
+ */
+app.get('/api/me/preferences', async (_req, res) => {
+  try {
+    const prefs = await getMyPreferences();
+    return res.status(200).json({
+      butlerPersona: prefs.butlerPersona,
+      defaultButlerPersona: DEFAULT_BUTLER_PERSONA,
+      updatedAt: prefs.updatedAt ?? null,
+    });
+  } catch (err) {
+    console.error('[me] get preferences failed:', (err as Error).message);
+    return sendError(res, 500, 'PREFS_GET_FAILED', (err as Error).message);
+  }
+});
+
+app.put('/api/me/preferences', async (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+  try {
+    const body = req.body as { butlerPersona?: string | null };
+    const prefs = await upsertMyPreferences({
+      butlerPersona: body.butlerPersona ?? null,
+    });
+    return res.status(200).json({
+      butlerPersona: prefs.butlerPersona,
+      defaultButlerPersona: DEFAULT_BUTLER_PERSONA,
+      updatedAt: prefs.updatedAt ?? null,
+    });
+  } catch (err) {
+    console.error('[me] put preferences failed:', (err as Error).message);
+    return sendError(res, 500, 'PREFS_PUT_FAILED', (err as Error).message);
   }
 });
 
