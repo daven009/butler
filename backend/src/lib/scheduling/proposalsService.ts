@@ -158,11 +158,32 @@ export async function buildRescheduleProposal(
     });
   }
 
-  // Stage 2 — would conflict. M2 phase-2 ships the proposal with mode='full'
-  // and surfaces conflicting listings as cascade entries. The actual replan
-  // (re-running planSchedule with a hard constraint) lands in phase-3.
-  // For now Apply on a 'full' proposal is rejected; the UI shows the
-  // conflict and offers to swap or drop manually.
+  // Stage 1.5 — exactly one conflict and the listing being moved is also
+  // currently scheduled → auto-promote to a SWAP. This is what the user
+  // almost always wants when they say "move A to <B's time>": A and B
+  // simply trade slots. We ship it as a single mode='local' proposal so
+  // Apply works in one click.
+  if (conflicts.length === 1 && listing.suggestedTime) {
+    const other = conflicts[0];
+    return createProposal(ctx.sessionId, {
+      intentSummary: `Swap ${listing.title} and ${other.title}`,
+      mode: 'local',
+      changes: [
+        change,
+        {
+          listingId: other.id,
+          action: 'reschedule',
+          from: other.suggestedTime ?? null,
+          to: listing.suggestedTime,
+        },
+      ],
+      cascade: [],
+    });
+  }
+
+  // Stage 2 — multiple conflicts (or the requested listing isn't currently
+  // scheduled, so a swap doesn't apply). Ships with mode='full'; full
+  // re-plan support lands in M2 phase-3.
   return createProposal(ctx.sessionId, {
     intentSummary:
       `Move ${listing.title} to ${newSlot} — but it conflicts with ${conflicts.map((c) => c.title).join(', ')}. Resolve manually for now (full re-plan support coming next).`,
@@ -301,48 +322,80 @@ export async function applyProposal(proposalId: string): Promise<{ ok: true; app
   }
 
   const c = db();
+  const nowIso = new Date().toISOString();
   let n = 0;
   for (const change of proposal.changes) {
+    let affected: { id: string }[] | null = null;
     if (change.action === 'reschedule') {
-      const { error } = await c
+      // M4: lock the listing so subsequent re-runs preserve the user's
+      // hand-picked slot. lock_status + locked_slot are the source of
+      // truth; suggested_time is kept in sync for the legacy read path.
+      const { data, error } = await c
         .from('listings')
         .update({
           suggested_time: change.to,
           status: 'confirmed',
           status_label: 'Confirmed',
           attention_reason: null,
+          lock_status: 'user_locked',
+          locked_slot: change.to,
+          locked_at: nowIso,
         })
-        .eq('id', change.listingId);
+        .eq('id', change.listingId)
+        .select('id');
       if (error) throw error;
-      n++;
+      affected = data as { id: string }[];
     } else if (change.action === 'drop') {
-      const { error } = await c
+      // Dropping a listing also implicitly clears any lock — there's
+      // nothing to pin a non-scheduled listing to.
+      const { data, error } = await c
         .from('listings')
         .update({
           status: 'imported',
           status_label: 'Removed from tour',
           suggested_time: null,
           attention_reason: 'Dropped via chat',
+          lock_status: null,
+          locked_slot: null,
+          locked_at: null,
         })
-        .eq('id', change.listingId);
+        .eq('id', change.listingId)
+        .select('id');
       if (error) throw error;
-      n++;
+      affected = data as { id: string }[];
     } else if (change.action === 'add') {
       // Listings already exist — 'add' here means "schedule a previously
-      // unscheduled listing". We just set its slot like reschedule.
-      const { error } = await c
+      // unscheduled listing". We just set its slot like reschedule, and
+      // lock it the same way (the user picked this slot deliberately).
+      const { data, error } = await c
         .from('listings')
         .update({
           suggested_time: change.to,
           status: 'confirmed',
           status_label: 'Confirmed',
           attention_reason: null,
+          lock_status: 'user_locked',
+          locked_slot: change.to,
+          locked_at: nowIso,
         })
-        .eq('id', change.listingId);
+        .eq('id', change.listingId)
+        .select('id');
       if (error) throw error;
-      n++;
+      affected = data as { id: string }[];
     }
+    // Defensive: a 0-row update means RLS hid the listing or the proposal
+    // was built against a stale id. We don't want a silent half-apply,
+    // so abort before marking the proposal applied.
+    if (!affected || affected.length === 0) {
+      console.error(
+        '[applyProposal] update affected 0 rows',
+        { proposalId, listingId: change.listingId, action: change.action, to: change.to },
+      );
+      throw new Error('PROPOSAL_APPLY_NO_ROWS');
+    }
+    n += affected.length;
   }
   await markProposalApplied(proposalId);
+  console.log('[applyProposal] applied', { proposalId, appliedChanges: n });
   return { ok: true, appliedChanges: n };
 }

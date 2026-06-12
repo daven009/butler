@@ -67,6 +67,12 @@ create table if not exists public.listings (
   lat               double precision,
   lng               double precision,
   agent_reachable   boolean,
+  -- Lock state set by chat-with-Butler "Apply" (M4 §8.6). null/unlocked
+  -- means the scheduler is free to re-assign; 'user_locked' pins this
+  -- listing to `locked_slot` across re-runs until the user unlocks it.
+  lock_status       text,
+  locked_slot       text,
+  locked_at         timestamptz,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   -- Same PG listing should not be imported into the same tour twice.

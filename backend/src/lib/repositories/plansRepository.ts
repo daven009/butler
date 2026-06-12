@@ -76,6 +76,11 @@ export interface Listing {
   lng?: number;
   /** Co-agent reachability. */
   agentReachable?: boolean;
+  /** M4 lock state (PRD §8.6). When 'user_locked', re-runs preserve the
+   *  pinned `lockedSlot` instead of recomputing this listing's time. */
+  lockStatus?: 'user_locked' | null;
+  lockedSlot?: string | null;
+  lockedAt?: string | null;
 }
 
 export interface SellerTimeWindow {
@@ -227,6 +232,9 @@ interface ListingRow {
   lat: number | null;
   lng: number | null;
   agent_reachable: boolean | null;
+  lock_status: string | null;
+  locked_slot: string | null;
+  locked_at: string | null;
 }
 
 interface ConversationRow {
@@ -323,6 +331,9 @@ function rowToListing(r: ListingRow): Listing {
     lat: r.lat ?? undefined,
     lng: r.lng ?? undefined,
     agentReachable: r.agent_reachable ?? undefined,
+    lockStatus: r.lock_status === 'user_locked' ? 'user_locked' : null,
+    lockedSlot: r.locked_slot ?? null,
+    lockedAt: r.locked_at ?? null,
   };
 }
 
@@ -357,6 +368,9 @@ function listingToRow(l: Listing, tourId: string, userId: string): Omit<ListingR
     lat: l.lat ?? null,
     lng: l.lng ?? null,
     agent_reachable: l.agentReachable ?? null,
+    lock_status: l.lockStatus ?? null,
+    locked_slot: l.lockedSlot ?? null,
+    locked_at: l.lockedAt ?? null,
   };
 }
 
@@ -711,6 +725,32 @@ export async function replaceConversationsForTour(
   if (error) throw error;
 }
 
+/**
+ * Append messages to a tour's conversation log without wiping existing
+ * rows. Used by the new "seed-on-import" flow so importing additional
+ * listings into an already-seeded tour adds their mock threads without
+ * destroying the buyer thread or other listings' history.
+ */
+export async function appendConversationsForTour(
+  tourId: string,
+  messages: ConversationMessage[],
+): Promise<void> {
+  if (!messages.length) return;
+  const userId = getCurrentUserId();
+  const c = db();
+  const rows = messages.map((m) => ({
+    tour_id: tourId,
+    user_id: userId,
+    listing_key: m.listingId || BUYER_LISTING_KEY,
+    sender: m.sender,
+    sender_name: m.senderName,
+    body: m.body,
+    ts_label: m.timestamp,
+  }));
+  const { error } = await c.from('conversations').insert(rows);
+  if (error) throw error;
+}
+
 /* ─── Scheduling ─────────────────────────────────────────────────────────── */
 
 import { planSchedule, type ScheduleRequest, type ScheduleResponse } from '../scheduling/planSchedule';
@@ -939,6 +979,17 @@ async function runStep_gather(
   const buyerSlots = getBuyerSlotsForTour(tourId);
   const useOneMap = await probeOneMap();
 
+  // M4: parse "HH:MM – HH:MM" (en-dash) into a TimeWindow on the tour's
+  // primary date. Used to feed locked listings into the scheduler so
+  // they keep their pinned slot across re-runs.
+  const tourDate = buyerSlots[0]?.date ?? new Date().toISOString().slice(0, 10);
+  const parseLockedSlot = (slot: string | null | undefined) => {
+    if (!slot) return undefined;
+    const m = /(\d{1,2}:\d{2})\s*[–\-to]+\s*(\d{1,2}:\d{2})/.exec(slot);
+    if (!m) return undefined;
+    return { date: tourDate, startTime: m[1], endTime: m[2] };
+  };
+
   const scheduleRequest: ScheduleRequest = {
     buyerSlots: buyerSlots.map((w) => ({ ...w })),
     listings: reachable.map((l) => ({
@@ -948,6 +999,10 @@ async function runStep_gather(
       lng: l.lng,
       agentName: l.coAgent?.name || 'Unknown',
       availableSlots: (l.availability || []).map((w) => ({ ...w })),
+      lockedSlot:
+        l.lockStatus === 'user_locked'
+          ? parseLockedSlot(l.lockedSlot)
+          : undefined,
     })),
     config: { useOneMap, viewingDurationMinutes: 30, bufferMinutes: 15 },
   };
@@ -1112,6 +1167,27 @@ async function runStep_persist(
     if (l.agentReachable === false) {
       attentionCount++;
       await ensureAttentionItem(c, tourId, userId, l.id, l.attentionReason || 'Co-agent unreachable');
+      continue;
+    }
+    // M4: locked listings carry a user-pinned slot in lock columns; the
+    // scheduler echoes them in `schedule[]`. We must NOT touch
+    // suggested_time (it's already the canonical slot the user picked)
+    // or the lock columns. But we DO need to make sure status is
+    // 'confirmed' — earlier steps may have left it on 'contacting' /
+    // 'imported' and we don't want the listing card to render as a
+    // pending state when it's actually locked.
+    if (l.lockStatus === 'user_locked') {
+      if (l.status !== 'confirmed' || l.statusLabel !== 'Confirmed') {
+        await c
+          .from('listings')
+          .update({
+            status: 'confirmed',
+            status_label: 'Confirmed',
+            attention_reason: null,
+          })
+          .eq('id', l.id);
+      }
+      scheduledCount++;
       continue;
     }
     const sched = scheduledById.get(l.id);
