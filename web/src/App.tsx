@@ -53,7 +53,6 @@ import * as api from "./api"
 import { pingExtension, importViaTab, waitForImportResult, storeTokenInExtension } from "./extensionBridge"
 import { initAuth, getStoredToken, signOut, type ButlerUser } from "./auth"
 import { SignIn } from "./SignIn"
-import { SchedulingProgress } from "./components/SchedulingProgress"
 import { SchedulingChat } from "./components/SchedulingChat"
 import { t } from "./i18n"
 
@@ -228,7 +227,7 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
   const [importText, setImportText] = useState("")
   const [schedulingStarted, setSchedulingStarted] = useState(false)
   const [schedulingRunning, setSchedulingRunning] = useState(false)
-  /** Live run row from /scheduling-runs/:id; drives <SchedulingProgress />. */
+  /** Live run row from /scheduling-runs/:id; drives AI scheduling state. */
   const [schedulingRun, setSchedulingRun] = useState<api.SchedulingRun | null>(null)
   /** Step catalogue from /scheduling-steps; fetched once on mount. */
   const [schedulingSteps, setSchedulingSteps] = useState<api.SchedulingStepDef[]>([])
@@ -661,7 +660,7 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
   }
 
   /**
-   * Drive the SchedulingProgress component by polling the run row. Updates
+   * Drive the scheduling UI by polling the run row. Updates
    * `schedulingRun` on every tick, then on completed/failed pulls fresh
    * listings + clears the running flag. Used by both the initial start
    * and the retry path.
@@ -711,23 +710,6 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
         console.warn('[scheduling] poll error, will retry:', err)
       }
     }, 800)
-  }
-
-  /**
-   * User clicked "Retry from failed step" in the SchedulingProgress UI.
-   * Backend resumes from the first non-'done' step.
-   */
-  const retryScheduling = async () => {
-    if (!schedulingRun) return
-    setSchedulingRunning(true)
-    try {
-      const refreshed = await api.retrySchedulingRun(schedulingRun.id)
-      setSchedulingRun(refreshed)
-      pollSchedulingRun(refreshed.id)
-    } catch (e) {
-      console.error('[scheduling] retry failed:', e)
-      setSchedulingRunning(false)
-    }
   }
 
   const toggleListing = (id: string) => {
@@ -864,7 +846,6 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
             onSelectTour={(tourId) => { void selectTour(tourId) }}
             onDeleteTour={requestDeleteTour}
             onStartScheduling={startScheduling}
-            onRetryScheduling={retryScheduling}
             onProposalApplied={async () => {
               if (!activeTour) return
               try {
@@ -1256,7 +1237,6 @@ function PlanWorkspace({
   onSelectTour,
   onDeleteTour,
   onStartScheduling,
-  onRetryScheduling,
   onImportListings,
   onProposalApplied,
 }: {
@@ -1284,7 +1264,6 @@ function PlanWorkspace({
   onSelectTour: (tourId: string) => void
   onDeleteTour: (tourId: string) => void
   onStartScheduling: () => void
-  onRetryScheduling: () => void
   onImportListings: (listings: Listing[]) => void
   onProposalApplied: () => void
 }) {
@@ -1480,11 +1459,8 @@ function PlanWorkspace({
               schedulingStarted={schedulingStarted}
               schedulingRunning={schedulingRunning}
               schedulingRun={schedulingRun}
-              schedulingSteps={schedulingSteps}
               chatSessionId={chatSessionId}
               onStartScheduling={onStartScheduling}
-              onRetryScheduling={onRetryScheduling}
-              onProposalApplied={onProposalApplied}
             />
           )}
         </section>
@@ -1593,11 +1569,8 @@ function AIAssistantWorkspace({
   schedulingStarted,
   schedulingRunning,
   schedulingRun,
-  schedulingSteps,
   chatSessionId,
   onStartScheduling,
-  onRetryScheduling,
-  onProposalApplied,
 }: {
   listings: Listing[]
   routeStage: RouteStage
@@ -1605,11 +1578,8 @@ function AIAssistantWorkspace({
   schedulingStarted: boolean
   schedulingRunning: boolean
   schedulingRun: api.SchedulingRun | null
-  schedulingSteps: api.SchedulingStepDef[]
   chatSessionId: string | null
   onStartScheduling: () => void
-  onRetryScheduling: () => void
-  onProposalApplied: () => void
 }) {
   const canStart = listings.length > 0 && !schedulingRunning
   const [selectedListingId, setSelectedListingId] = useState<string | null>(listings[0]?.id ?? null)
@@ -1655,16 +1625,13 @@ function AIAssistantWorkspace({
               onStartScheduling={onStartScheduling}
             />
           ) : (
-            <CoAgentConversationPanel listing={selectedListing} chatSessionId={chatSessionId} onProposalApplied={onProposalApplied} />
+            <CoAgentConversationPanel listing={selectedListing} />
           )}
           <div className="min-h-0 overflow-hidden rounded-[6px] border border-[#eeeeee] bg-white shadow-sm">
             <ListingAIActivityPanel
               listing={selectedListing}
-              schedulingRun={schedulingRun}
               schedulingRunning={schedulingRunning}
-              schedulingSteps={schedulingSteps}
               needsBrief={needsSingleListingBrief}
-              onRetryScheduling={onRetryScheduling}
             />
           </div>
         </>
@@ -1936,12 +1903,8 @@ function SingleListingScheduleBrief({
 
 function CoAgentConversationPanel({
   listing,
-  chatSessionId,
-  onProposalApplied,
 }: {
   listing: Listing | null
-  chatSessionId: string | null
-  onProposalApplied: () => void
 }) {
   return (
     <section className="min-h-0 overflow-hidden rounded-[6px] border border-[#eeeeee] bg-white shadow-sm">
@@ -1955,11 +1918,6 @@ function CoAgentConversationPanel({
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <SimulatedCoAgentThread listing={listing} />
         </div>
-        {chatSessionId && (
-          <div className="max-h-[46%] min-h-[220px] border-t border-[#eeeeee]">
-            <SchedulingChat sessionId={chatSessionId} onProposalApplied={onProposalApplied} />
-          </div>
-        )}
       </div>
     </section>
   )
@@ -1993,21 +1951,67 @@ function CoAgentMessageBubble({ side, text, muted }: { side: "ai" | "agent"; tex
   )
 }
 
+function getListingScheduleBullets(
+  listing: Listing | null,
+  needsBrief: boolean,
+  schedulingRunning: boolean,
+): Array<{ text: string; done?: boolean; active?: boolean }> {
+  if (!listing) {
+    return [{ text: "选择一个房源后显示它的安排动态。", active: true }]
+  }
+
+  if (needsBrief) {
+    return [
+      { text: `${listing.condo} 是排期开始后新增的房源。`, done: true },
+      { text: "等待你补充这个房源的 AI Schedule Brief。", active: true },
+      { text: "开始后 AI 会尽量保留已确认安排，只处理这个新房源的协调和插入。" },
+    ]
+  }
+
+  if (listing.status === "confirmed") {
+    return [
+      { text: `已读取 ${listing.condo} 的 listing 信息和对方中介资料。`, done: true },
+      { text: `确认对方中介 ${listing.coAgent.name || "对方中介"} 有可联系号码。`, done: true },
+      { text: listing.suggestedTime ? `对方确认可看时间：${listing.suggestedTime}。` : "对方已确认可看时间。", done: true },
+      { text: "AI 判断该时间不会破坏当前路线顺序，已写入看房安排。", done: true },
+    ]
+  }
+
+  if (listing.status === "needs-attention") {
+    return [
+      { text: `已读取 ${listing.condo} 的 listing 信息和对方中介资料。`, done: true },
+      { text: "AI 已尝试匹配客户时间窗、房源可约时间和路线顺序。", done: true },
+      { text: listing.attentionReason ?? "出现时间冲突或信息不足，无法自动确认。", active: true },
+      { text: "需要你决定：跳过、手动安排，或让 AI 用新的约束重新尝试。" },
+    ]
+  }
+
+  if (schedulingRunning || listing.status === "contacting") {
+    return [
+      { text: `正在读取 ${listing.condo} 的 listing 信息和对方中介资料。`, done: true },
+      { text: `正在模拟联系 ${listing.coAgent.name || "对方中介"} 确认可看时间。`, active: true },
+      { text: "下一步会判断它是否能插入当前路线，并避免影响已确认房源。" },
+    ]
+  }
+
+  return [
+    { text: `已导入 ${listing.condo}，等待 AI 开始排期。`, done: true },
+    { text: listing.coAgent.phone ? `已读取对方中介联系方式：${listing.coAgent.name || "对方中介"}。` : "缺少对方中介联系方式，需要补充后才能协调。", done: Boolean(listing.coAgent.phone), active: !listing.coAgent.phone },
+    { text: "开始排期后，AI 会匹配客户可看时间、房源可约时间和路线顺序。" },
+  ]
+}
+
 function ListingAIActivityPanel({
   listing,
-  schedulingRun,
   schedulingRunning,
-  schedulingSteps,
   needsBrief = false,
-  onRetryScheduling,
 }: {
   listing: Listing | null
-  schedulingRun: api.SchedulingRun | null
   schedulingRunning: boolean
-  schedulingSteps: api.SchedulingStepDef[]
   needsBrief?: boolean
-  onRetryScheduling: () => void
 }) {
+  const bullets = getListingScheduleBullets(listing, needsBrief, schedulingRunning)
+
   return (
     <section className="flex h-full min-h-0 flex-col">
       <div className="border-b border-[#eeeeee] px-4 py-3">
@@ -2015,22 +2019,17 @@ function ListingAIActivityPanel({
         <p className="mt-1 text-xs font-semibold text-[#717171]">{listing?.condo ?? "当前房源"}</p>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {!needsBrief && (schedulingRunning || schedulingRun) && (
-          <SchedulingProgress run={schedulingRun} steps={schedulingSteps} onRetry={onRetryScheduling} />
-        )}
-        {needsBrief ? (
-          <div className="space-y-3">
-            <ActivityLine text={listing ? `${listing.condo} 是排期开始后新增的房源。` : "等待选择房源。"} />
-            <ActivityLine text="等待你补充这个房源的 AI Schedule Brief。" active />
-            <ActivityLine text="开始后 AI 会尽量保留已确认安排，只处理这个新房源的协调和插入。" />
-          </div>
-        ) : (
-          <div className="mt-4 space-y-3">
-            <ActivityLine text={listing ? `读取 ${listing.condo} 的 listing 信息和对方中介资料。` : "等待选择房源。"} />
-            <ActivityLine text="匹配客户可看时间、房源可约时间和线路顺序。" active={schedulingRunning} />
-            <ActivityLine text={listing?.attentionReason ?? "如果出现卡点，会在这里要求你决定。"} active={listing?.status === "needs-attention"} />
-          </div>
-        )}
+        <div>
+          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#717171]">安排步骤</p>
+          <ul className="mt-4 space-y-4">
+            {bullets.map((item) => (
+              <li key={item.text} className="flex gap-3 text-sm leading-6">
+                <span className={`mt-2 size-2 shrink-0 rounded-full ${item.active ? "bg-[#ff385c]" : item.done ? "bg-[#177245]" : "bg-[#d9d9d9]"}`} />
+                <span className={item.active ? "font-semibold text-[#222222]" : "font-medium text-[#6a6a6a]"}>{item.text}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
       <div className="border-t border-[#eeeeee] p-3">
         <div className="flex gap-2">
