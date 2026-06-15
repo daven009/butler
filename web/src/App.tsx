@@ -2986,6 +2986,96 @@ function ActivityLine({ text, active }: { text: string; active?: boolean }) {
   )
 }
 
+function AIWorkPanel({
+  run,
+  steps,
+  listings,
+  onClose,
+}: {
+  run: api.SchedulingRun | null
+  steps: api.SchedulingStepDef[]
+  listings: Listing[]
+  onClose: () => void
+}) {
+  const currentStep = steps.find((step) => step.key === run?.currentStep)
+  const progress = Math.max(0, Math.min(100, run?.progress ?? 3))
+  const fallbackSteps = steps.length ? steps : [
+    { key: "prepare", label: "整理线路要求" },
+    { key: "contacts", label: "检查中介联系方式" },
+    { key: "coordinate", label: "模拟联系对方中介" },
+    { key: "optimize", label: "解决时间冲突并生成路线" },
+  ]
+  const statusMap = run?.stepState ?? {}
+  const sampleListings = listings.slice(0, 3)
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <PanelHeader title="AI 工作中" description="当前为内部模拟，不会真实发送 WhatsApp。" icon={Bot} onClose={onClose} />
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div className="rounded-[6px] border border-[#ffd5de] bg-[#fff5f7] p-4">
+          <p className="text-xs font-bold uppercase tracking-[0.08em] text-[#c13515]">当前步骤</p>
+          <h2 className="mt-2 text-xl font-bold">{currentStep?.label ?? "启动 AI 排期任务"}</h2>
+          <p className="mt-2 text-sm leading-6 text-[#6a6a6a]">
+            Butler 正在读取线路、房源和模拟沟通结果，完成后会自动生成看房路线。
+          </p>
+          <div className="mt-4 h-2 overflow-hidden rounded-full bg-white">
+            <div className="h-full rounded-full bg-[#ff385c] transition-[width] duration-300" style={{ width: `${progress}%` }} />
+          </div>
+          <p className="mt-2 text-xs font-semibold text-[#717171]">{progress}%</p>
+        </div>
+
+        <div className="mt-4 rounded-[6px] border border-[#eeeeee] bg-white p-4">
+          <p className="text-sm font-bold">工作步骤</p>
+          <div className="mt-3 space-y-3">
+            {fallbackSteps.map((step) => {
+              const state = statusMap[step.key] ?? (step.key === run?.currentStep ? "running" : "pending")
+              return (
+                <div key={step.key} className="flex items-center gap-3">
+                  <span className={`grid size-6 place-items-center rounded-full ${
+                    state === "done"
+                      ? "bg-[#f3fbf5] text-[#177245]"
+                      : state === "running"
+                        ? "bg-[#fff5f7] text-[#ff385c]"
+                        : state === "failed"
+                          ? "bg-[#ff385c] text-white"
+                          : "bg-[#f2f2f2] text-[#9ca3af]"
+                  }`}>
+                    {state === "running" ? <span className="size-2 animate-pulse rounded-full bg-current" /> : <CheckCircle2 className="size-3.5" />}
+                  </span>
+                  <span className="text-sm font-semibold text-[#222222]">{step.label}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-[6px] border border-[#eeeeee] bg-white p-4">
+          <p className="text-sm font-bold">最近活动</p>
+          <div className="mt-3 space-y-3">
+            <ActivityLine text={`已读取 ${listings.length} 个房源，准备协调可看房时间。`} />
+            {sampleListings.map((listing) => (
+              <ActivityLine
+                key={listing.id}
+                text={`检查 ${listing.condo || listing.title} 的对方中介联系方式。`}
+              />
+            ))}
+            <ActivityLine text="正在模拟发送看房时间请求，并等待对方中介回复。" active />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ActivityLine({ text, active }: { text: string; active?: boolean }) {
+  return (
+    <div className="flex gap-3 text-sm leading-6">
+      <span className={`mt-2 size-2 shrink-0 rounded-full ${active ? "animate-pulse bg-[#ff385c]" : "bg-[#dddddd]"}`} />
+      <span className={active ? "font-semibold text-[#222222]" : "text-[#6a6a6a]"}>{text}</span>
+    </div>
+  )
+}
+
 function ListingDetailPanel({
   listing,
   onClose,
