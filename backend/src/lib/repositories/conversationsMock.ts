@@ -10,28 +10,35 @@
  *   - 10% are rejected   → unit already sold/rented
  *
  * The conversations are persisted into the same butler-web-store.json under
- * `conversations[tourId]`. We also stamp each listing with:
+ * `conversations[tourId]`. We also prepare each listing with:
  *   - `availability`: extracted seller time windows (in scheduler-friendly format)
  *   - `agentReachable`: true / false (false = unavailable / no-reply)
- *   - `status`: 'contacting' (so the UI can move it out of 'imported')
+ *   - `status`: 'contacting' when scheduling actually starts
+ *
+ * Import callers defer the status change so mock data is ready without
+ * making a newly imported listing appear to have started coordination.
  *
  * NOTE: This is a *deterministic* mock — no LLM call required. The slot
  * extraction here uses fixed weekend dates (this Saturday / Sunday) so the
  * downstream scheduler test is reproducible.
  */
 
-import { clone } from '../store';
 import {
   listListingsByTour,
+  getTourDetail,
   updateListingInTour,
   appendConversationsForTour,
   listConversationsByTour,
+  replaceConversationsForTour,
 } from './plansRepository';
 import type {
   ConversationMessage,
   Listing,
   SellerTimeWindow,
 } from './plansRepository';
+import { expandTourAvailability } from '../tourAvailability';
+import { readStoredTourAvailability } from '../tourAvailability';
+import { findSlotIntersections, windowDurationMinutes } from '../scheduling/timeUtils';
 
 /* ─── Date helpers ─── */
 
@@ -128,32 +135,12 @@ export interface SeedResult {
   buyerSlots: SellerTimeWindow[];
 }
 
-export interface BuyerSeed {
-  /** Sat + Sun broad availability windows. */
-  slots: SellerTimeWindow[];
-  message: string;
-}
-
-/** Default buyer availability — wide enough to overlap with most happy/partial sellers. */
-function buildBuyerSeed(): BuyerSeed {
-  const { sat, sun } = nextWeekendDates();
-  return {
-    slots: [
-      { date: sat, startTime: '09:00', endTime: '13:00' },
-      { date: sat, startTime: '14:00', endTime: '18:00' },
-      { date: sun, startTime: '10:00', endTime: '17:00' },
-    ],
-    message:
-      "I'm free Sat 9am–1pm and 2–6pm, also Sun 10am–5pm. Prefer to bunch the viewings together.",
-  };
-}
-
 /**
  * Seed mock conversations + buyer slots for the given tour.
  *
  * **Idempotent at the listing level** (changed 2026-06-06): listings
- * that already carry seeded `availability` data — and for which the
- * conversations table already has the per-listing thread — are skipped.
+ * for which the conversations table already has a per-listing thread
+ * are skipped.
  * Only freshly-imported listings get a new mock conversation drafted.
  *
  * The buyer thread (under the `__buyer__` sentinel) is also seeded only
@@ -161,15 +148,18 @@ function buildBuyerSeed(): BuyerSeed {
  * makes "Import another listing" the natural trigger for seeding.
  *
  * Pass `force: true` to bypass the cache and re-seed everything (used
- * by an internal admin path / debugging only).
+ * by an internal admin path / debugging only). Import callers pass
+ * `deferSchedulingState: true` to keep new listings in `imported`.
  */
 export async function seedTourConversations(
   tourId: string,
   agentName: string = 'Dave Shen',
-  options: { force?: boolean } = {},
+  options: { force?: boolean; deferSchedulingState?: boolean } = {},
 ): Promise<SeedResult> {
   const force = options.force === true;
+  const deferSchedulingState = options.deferSchedulingState === true;
   const listings = await listListingsByTour(tourId);
+  const tour = await getTourDetail(tourId);
   if (!listings.length) {
     return {
       tourId,
@@ -180,12 +170,9 @@ export async function seedTourConversations(
     };
   }
 
-  // Detect which listings are already seeded so we don't overwrite their
-  // conversation/availability snapshots on re-run. A listing is "seeded"
-  // iff (a) it already has at least one conversation row in the DB AND
-  // (b) availability has been computed (we treat a non-undefined
-  // `availability` array as proof; even an empty array means the
-  // scenario picker decided "no slots", which is a real seeded state).
+  // Conversation rows are the source of truth for whether a listing has
+  // been seeded. Availability alone is insufficient: null DB values used
+  // to be normalised to [] and caused fresh imports to be skipped.
   const existingMessages = force
     ? []
     : await listConversationsByTour(tourId);
@@ -194,17 +181,31 @@ export async function seedTourConversations(
     for (const m of existingMessages) {
       if (m.listingId && m.listingId !== '__buyer__') seededListingIds.add(m.listingId);
     }
-    // Backstop: a listing whose row has availability but no conv row is
-    // STILL considered seeded (avoids re-seeding when conversations
-    // table got truncated independently — rare, but safer to be lazy).
-    for (const l of listings) {
-      if (l.availability !== undefined) seededListingIds.add(l.id);
-    }
   }
   const buyerThreadAlreadyExists =
     !force && existingMessages.some((m) => m.listingId === '__buyer__');
 
-  const { sat, sun, satLabel, sunLabel } = nextWeekendDates();
+  const buyerSlots = tour ? expandTourAvailability(tour.targetDate, tour.timeWindow) : [];
+  const fallbackWeekend = nextWeekendDates();
+  const buyerDates = [...new Set(buyerSlots.map((slot) => slot.date))].sort();
+  const sat = buyerDates[0] || fallbackWeekend.sat;
+  const nextDay = new Date(`${sat}T00:00:00Z`);
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+  const sun = Number.isNaN(nextDay.getTime())
+    ? fallbackWeekend.sun
+    : nextDay.toISOString().slice(0, 10);
+  const dateLabel = (value: string) => {
+    const parsed = new Date(`${value}T00:00:00`);
+    return Number.isNaN(parsed.getTime())
+      ? value
+      : parsed.toLocaleDateString('en-SG', {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+      });
+  };
+  const satLabel = dateLabel(sat);
+  const sunLabel = dateLabel(sun);
   const newMessages: ConversationMessage[] = [];
   const counters: Record<ScenarioName, number> = { happy: 0, partial: 0, unreachable: 0, rejected: 0 };
 
@@ -212,7 +213,12 @@ export async function seedTourConversations(
   // PA <-> buyer channel used to gather availability for the whole tour.
   // We park it under a sentinel listingId so it never bleeds into any
   // individual listing's "Listing conversation" sidebar.
-  const buyer = buildBuyerSeed();
+  const buyer = {
+    slots: buyerSlots,
+    message: buyerSlots.length
+      ? `I'm available ${buyerSlots.map((slot) => `${slot.date} ${slot.startTime}–${slot.endTime}`).join(', ')}.`
+      : 'I have not provided availability yet.',
+  };
   const BUYER_THREAD_ID = '__buyer__';
   let msgSeq = Date.now() % 100000; // avoid id collisions across re-seed calls
   const ts = (h: number, m: number) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
@@ -237,11 +243,11 @@ export async function seedTourConversations(
   if (!buyerThreadAlreadyExists) {
     newMessages.push(
       newMsg(BUYER_THREAD_ID, 'ai', 'AI PA',
-        `Hi, before I start booking viewings for the ${listings.length} shortlisted units, what time slots work for you this weekend?`,
+        `Hi, before I start booking viewings for the ${listings.length} shortlisted units, what time slots work for you?`,
         ts(8, 30)),
       newMsg(BUYER_THREAD_ID, 'co-agent', 'Buyer', buyer.message, ts(8, 41)),
       newMsg(BUYER_THREAD_ID, 'ai', 'AI PA',
-        `Got it. I'll target ${satLabel} morning/afternoon and ${sunLabel} daytime, then come back with a final route.`,
+        `Got it. I'll use those availability windows and come back with a final route.`,
         ts(8, 43)),
     );
   }
@@ -250,22 +256,32 @@ export async function seedTourConversations(
   // so we only persist updates for those rows (avoids needless writes
   // and keeps locked listings untouched).
   const mutatedListingIds = new Set<string>();
+  let freshListingIndex = 0;
 
   // ─── Per-listing co-agent conversations ───
   listings.forEach((listing, idx) => {
-    // M4: locked listings carry a user-pinned slot — re-runs must not
-    // drop them back to 'contacting' or rewrite their availability,
-    // otherwise the UI flickers between "Scheduling" and "Confirmed"
-    // and the scheduler may briefly receive empty availableSlots.
-    if (listing.lockStatus === 'user_locked') return;
-
     // Already-seeded listing: skip entirely so the conversation thread
     // stays exactly as it was first generated. (This is the whole point
     // of the 2026-06-06 change — debugging is hard when mock data
     // changes under you on every re-run.)
-    if (seededListingIds.has(listing.id)) return;
+    if (seededListingIds.has(listing.id)) {
+      if (!deferSchedulingState && listing.status === 'imported') {
+        listing.status = listing.agentReachable === false ? 'needs-attention' : 'contacting';
+        listing.statusLabel =
+          listing.agentReachable === false ? 'Co-agent unavailable' : 'Contacting co-agent';
+        listing.attentionReason =
+          listing.agentReachable === false
+            ? 'Co-agent is unavailable or did not respond. Review before scheduling.'
+            : undefined;
+        mutatedListingIds.add(listing.id);
+      }
+      return;
+    }
 
-    const scenario = pickScenario(idx);
+    // Scenario distribution belongs to this seed batch, not to the
+    // listing's absolute position in the Tour. Otherwise adding the 6th
+    // and 7th listings always produced unreachable/rejected results.
+    const scenario = pickScenario(freshListingIndex++);
     counters[scenario.name]++;
     const slots = scenario.slotsBuilder(sat, sun);
     const coAgentName = listing.coAgent?.name || `Co-agent ${idx + 1}`;
@@ -319,28 +335,26 @@ export async function seedTourConversations(
     // Stamp the listing with availability + reachability + status
     listing.availability = slots;
     listing.agentReachable = scenario.agentReachable;
-    listing.status = scenario.name === 'rejected' || scenario.name === 'unreachable' ? 'needs-attention' : 'contacting';
-    listing.statusLabel = scenario.name === 'rejected'
-      ? 'Unit no longer available'
-      : scenario.name === 'unreachable'
-        ? 'Co-agent not responding'
-        : 'Contacting co-agent';
-    listing.attentionReason = scenario.name === 'rejected'
-      ? 'Co-agent reports the unit is already sold. Confirm before notifying buyer.'
-      : scenario.name === 'unreachable'
-        ? 'Co-agent did not respond within 24h despite a follow-up. Decide: keep waiting / call yourself / drop.'
-        : undefined;
+    if (!deferSchedulingState) {
+      listing.status = scenario.name === 'rejected' || scenario.name === 'unreachable' ? 'needs-attention' : 'contacting';
+      listing.statusLabel = scenario.name === 'rejected'
+        ? 'Unit no longer available'
+        : scenario.name === 'unreachable'
+          ? 'Co-agent not responding'
+          : 'Contacting co-agent';
+      listing.attentionReason = scenario.name === 'rejected'
+        ? 'Co-agent reports the unit is already sold. Confirm before notifying buyer.'
+        : scenario.name === 'unreachable'
+          ? 'Co-agent did not respond within 24h despite a follow-up. Decide: keep waiting / call yourself / drop.'
+          : undefined;
+    }
     mutatedListingIds.add(listing.id);
   });
 
-  // Persist conversations — append-only so existing per-listing threads
-  // stay frozen. (Force mode wipes & rewrites everything to support
-  // ad-hoc full re-seed.)
+  // Persist conversations — append-only for normal seed-on-import.
+  // Force mode explicitly replaces the whole tour's mock history.
   if (force) {
-    // Need both helpers in force mode — use direct delete + insert via
-    // appendConversationsForTour after a manual wipe.
-    // (Skipping that now since debugging always uses non-force.)
-    await appendConversationsForTour(tourId, newMessages);
+    await replaceConversationsForTour(tourId, newMessages);
   } else {
     await appendConversationsForTour(tourId, newMessages);
   }
@@ -355,9 +369,13 @@ export async function seedTourConversations(
     await updateListingInTour(tourId, l.id, {
       availability: l.availability,
       agentReachable: l.agentReachable,
-      status: l.status,
-      statusLabel: l.statusLabel,
-      attentionReason: l.attentionReason,
+      ...(!deferSchedulingState
+        ? {
+            status: l.status,
+            statusLabel: l.statusLabel,
+            attentionReason: l.attentionReason,
+          }
+        : {}),
     });
   }
 
@@ -370,7 +388,92 @@ export async function seedTourConversations(
   };
 }
 
-/** Get the buyer's mock slots for this tour (currently shared across tours). */
-export function getBuyerSlotsForTour(_tourId: string): SellerTimeWindow[] {
-  return clone(buildBuyerSeed().slots);
+/** Parse the buyer's persisted availability from the Tour. */
+export async function getBuyerSlotsForTour(
+  tourId: string,
+  candidateDates?: string[],
+): Promise<SellerTimeWindow[]> {
+  const tour = await getTourDetail(tourId);
+  if (!tour) return [];
+  return expandTourAvailability(tour.targetDate, tour.timeWindow, candidateDates);
+}
+
+function formatWindows(windows: SellerTimeWindow[]): string {
+  return windows
+    .map((slot) => `${slot.date} ${slot.startTime}–${slot.endTime}`)
+    .join('、');
+}
+
+/**
+ * Resolve hard availability mismatches immediately after seller availability
+ * is seeded. These listings cannot be fixed by route preferences, so they
+ * should not enter the scheduling-constraint conversation.
+ */
+export async function markAvailabilityMismatches(tourId: string): Promise<string[]> {
+  const tour = await getTourDetail(tourId);
+  if (!tour) return [];
+  const listings = await listListingsByTour(tourId);
+  const sellerDates = listings.flatMap((listing) =>
+    (listing.availability || []).map((slot) => slot.date),
+  );
+  const buyerSlots = await getBuyerSlotsForTour(tourId, sellerDates);
+  if (!buyerSlots.length) {
+    console.warn(
+      '[availability] skipped mismatch classification because buyer availability is invalid',
+      { tourId, targetDate: tour.targetDate },
+    );
+    return [];
+  }
+  const buyerSummary =
+    readStoredTourAvailability(tour.targetDate, tour.timeWindow)?.summary ||
+    tour.timeWindow;
+  const updatedIds: string[] = [];
+
+  for (const listing of listings) {
+    if (listing.status === 'confirmed') continue;
+    const sellerSlots = listing.availability || [];
+    if (!sellerSlots.length) {
+      const reason =
+        `卖家中介尚未提供 ${listing.title} 的任何可用看房时段，` +
+        `因此无法与买家可看时间（${buyerSummary}）进行匹配。请先联系卖家中介确认可用时间。`;
+      await updateListingInTour(tourId, listing.id, {
+        status: 'needs-attention',
+        statusLabel: '无法排期',
+        suggestedTime: 'Pending',
+        attentionReason: reason,
+      });
+      updatedIds.push(listing.id);
+      continue;
+    }
+    const listingBuyerSlots = buyerSlots.filter((slot) =>
+      sellerSlots.some((sellerSlot) => sellerSlot.date === slot.date),
+    );
+    const hasViewingWindow = findSlotIntersections(listingBuyerSlots, sellerSlots)
+      .some((window) => windowDurationMinutes(window) >= 30);
+    if (hasViewingWindow) {
+      if (listing.status === 'needs-attention' && listing.statusLabel === '无法排期') {
+        await updateListingInTour(tourId, listing.id, {
+          status: 'imported',
+          statusLabel: 'Imported',
+          suggestedTime: 'Pending',
+          attentionReason: null,
+        });
+        updatedIds.push(listing.id);
+      }
+      continue;
+    }
+
+    const reason =
+      `买家可看时间（${buyerSummary}）与卖家中介可用时间（${formatWindows(sellerSlots)}）` +
+      '没有至少 30 分钟重叠，当前无法排期。请调整买家时间，或联系卖家中介确认其他时段。';
+    await updateListingInTour(tourId, listing.id, {
+      status: 'needs-attention',
+      statusLabel: '无法排期',
+      suggestedTime: 'Pending',
+      attentionReason: reason,
+    });
+    updatedIds.push(listing.id);
+  }
+
+  return updatedIds;
 }

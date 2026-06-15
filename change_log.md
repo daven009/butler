@@ -8,6 +8,92 @@
 
 ---
 
+## 2026-06-14 — Make listing briefs the only scheduling entry point
+
+The separate Tour-level scheduling button and global Butler session path have been retired. A Tour with listings now opens directly into the selected listing's AI Schedule Brief; the first finalized brief creates the initial Tour proposal, and every later `submit_listing_brief` reloads all `ready` briefs for that Tour and jointly replans every ready, unconfirmed listing. On the first successful brief, the tool returns an explicit initialization signal and Butler deterministically tells the user that Tour scheduling has been established and the first valid listing has joined the initial proposal. Existing confirmed viewings remain fixed: their slots plus a travel buffer are removed from buyer availability before the deterministic scheduler runs, so later proposals cannot move them. Listing priority influences candidate order, proposals still require explicit Apply, and session creation now rejects requests without `listingId`. This is whole-candidate replanning under locked confirmed constraints, but `planSchedule` remains a greedy heuristic and does not claim mathematically proven global optimality. No migration was added or run.
+
+## 2026-06-14 — Split Butler into listing sessions and a deterministic Tour Engine
+
+Scheduling conversations are now scoped to one listing instead of sharing a single message history across the whole Tour. `scheduling_sessions.listing_id` identifies the listing thread, while the new RLS-protected `listing_scheduling_briefs` table stores the LLM's versioned structured output (`constraints`, priority, flexibility, summary, and ready/clarifying status). The Listing LLM finalizes requirements through `submit_listing_brief`; that function adds the product defaults (`include_listing` and `preserve_confirmed`) and hands the brief to the existing deterministic proposal/scheduling service, which remains the only component allowed to calculate Tour-wide changes. The frontend caches a separate session id per listing, restores existing clarification conversations after reload, and clears local chat state immediately when switching listings. A migration file was added but not executed.
+
+## 2026-06-13 — Make buyer availability required and editable on Tours
+
+Tour creation now requires an ISO viewing date and at least one valid 24-hour buyer availability range (`HH:MM-HH:MM`, one per line). Clicking the active Tour in the planning sidebar opens an edit dialog for its name, date, buyer availability and AI scheduling requirements; `PATCH /api/tours/:tourId` persists those edits using the existing `target_date` and `time_window` columns, so no migration is required. The scheduler and constraint proposal engine now parse buyer slots from the Tour instead of using fixed weekend mock availability, and seeded buyer-conversation copy reflects the persisted ranges. Tour sidebar metadata displays the configured availability for quick verification.
+
+## 2026-06-13 — Show seller-agent availability above Butler chat
+
+The focused listing's persisted seller/co-agent availability is now exposed in the frontend `Listing` type and displayed directly beneath the Butler conversation title, grouped as localized date and time windows. Listings without availability show an explicit “尚未提供” state, making infeasible scheduling explanations auditable from the chat surface. No migration was added or run.
+
+## 2026-06-13 — Reject overlapping and cross-date scheduling proposals
+
+Full-tour constraint proposals now re-plan only on the tour's `targetDate`, preventing two same-clock slots from different days from being collapsed into the date-less `suggested_time` field. `propose_add_constraint` now accepts a set of constraints in one call and supports `exclude_time_window`, so a lunch break such as 12:30–13:30 is represented as a blackout interval rather than being misread as “no viewings before 13:30.” It also supports `preserve_confirmed`; when requested, a re-plan that drops any confirmed listing is rejected as infeasible. Generated schedules are checked for overlaps, Apply rejects overlapping destination slots defensively, and the proposal card disables Apply for historical proposals that already contain conflicts. Infeasible insertions now report the tour date, buyer windows and co-agent windows; Butler is instructed not to retry the same failed proposal tool, and the UI exposes the concrete tool error instead of repeating opaque trace pills. No migration was added or run.
+
+## 2026-06-13 — Gate new listings behind AI scheduling constraints
+
+Seed-on-import still prepares deterministic mock co-agent conversations and availability because WhatsApp is not connected, but it no longer advances a newly imported listing from `imported` to `contacting`. The AI Assistant now treats each listing independently: any unscheduled listing shows the existing AI Schedule Brief start page in the center column, where the user submits natural-language scheduling preferences scoped to that listing; the request is sent through the scheduling session with listing context. The co-agent conversation is shown only after that listing is confirmed with a concrete suggested time. Starting scheduling promotes previously seeded imported listings into the active coordination state before running the scheduler. No migration was added or run.
+
+## 2026-06-13 — Ground PropertyGuru listing identity in primary-page evidence
+
+The extension import previously sent the entire PropertyGuru detail-page text dump to the LLM, allowing FAQ, recommendation and footer content to compete with the actual listing header and description; this caused an FAQ question to be selected as a condo/project name. Import now sends structured metadata plus bounded primary-listing and agent-contact sections, and the mapper accepts a project name only when it is present in the relevant source content. The earlier English question-prefix blacklist was removed. Existing listing `500082653` was corrected in Supabase to `291 Bishan Street 24` with an empty condo/project name, and the matching stops in the current tour's persisted route snapshots were updated to the same display data. No migration was added or run.
+
+## 2026-06-13 — Seed conversation display and idempotency fix
+
+The AI Assistant's co-agent panel now loads the persisted conversation for the selected tour/listing instead of deriving a hard-coded negative thread from listing status. This fixes the misleading UI where every listing appeared to receive the same "not available / change slot" response even when the deterministic seed had generated a happy-path conversation. Seed idempotency now treats an existing per-listing conversation row as the source of truth; a null listing availability is no longer normalized to `[]` and mistaken for proof that a fresh import was already seeded. The optional seed `force` flag is now wired through the API and correctly replaces the tour's mock conversations instead of appending duplicates. No migration was added or run.
+
+## 2026-06-13 — Import-to-AI flow + constraint-driven full-tour proposals
+
+The primary product flow now continues from Chrome-extension import directly into real Butler scheduling chat. Import still seeds idempotent mock co-agent conversations/availability because WhatsApp is not connected. After the extension returns, the frontend refreshes the tour, focuses the imported listing, switches to the AI Assistant workspace, and opens the tour's scheduling session. Scheduling messages now include optional `{ context: { listingId } }`; the agent prompt materializes that listing's status, current slot, mock availability, and attention reason so references such as "这套" resolve correctly. The previous local-only "single listing scheduling brief" textarea was removed from this path and replaced with the actual `SchedulingChat`.
+
+`propose_add_constraint` now supports `include_listing`, `before_time`, `after_time`, `must_morning`, and `must_afternoon` by narrowing buyer/listing availability, running deterministic `planSchedule`, and storing the complete requested change + cascade diff as a `mode='full'` proposal. Full proposals with concrete destinations can be applied; Apply checks for stale source slots and performs best-effort rollback if a multi-row write fails. Proposal cards show listing names and allow full-tour Apply. Historical/manual-review proposals with unknown cascade destinations remain non-applicable in both UI and backend. Changing tour date and exact-time moves with multiple conflicts are still pending. No schema migration was added or run.
+
+## 2026-06-13 — Merge of remote UI rewrite + retraction of M4 (lock) / persona feature set
+
+Co-worker (`daven009`) pushed two commits to `origin/staging-supabase-integration` (`c453c47 "UI updates"` + `839a623 "Refactor scheduling activity into listing bullets"`) that effectively rewrite the frontend on a new direction: Plan/Tour CRUD UI, full Chinese (zh) localization via a new `i18n.ts`, side-panel chat retained but pulled out of the listing-detail card, scheduling activity demoted from `SchedulingProgress` mega-component to inline listing bullets. In parallel, the local branch had 6 commits adding M4 listing-lock + Butler-persona + side-by-side dock + seed-on-import. The two histories diverged from `ba09884`. **Strategy (user-approved): adopt remote frontend 100%, trim backend to match.**
+
+**Frontend — pulled wholesale from origin/staging-supabase-integration**:
+- 13 modified web/src files (App.tsx now ~3300 lines, SignIn now zh by default, api.ts gains `updatePlan/deletePlan/deleteTour` & drops `unlockListing/fetchMyPreferences/saveMyPreferences`, domain.ts removes `lockStatus/lockedSlot`)
+- New: `web/src/i18n.ts` (minimal zh dictionary)
+- New top-level: `AGENTS.md` (LLM behavior guidelines from co-worker; complements existing `CLAUDE.md`)
+
+**Backend — surgical changes to match**:
+- *Added* to match remote UI:
+  - `PATCH /api/plans/:planId` (edit client plan from UI)
+  - `DELETE /api/plans/:planId`
+  - `DELETE /api/tours/:tourId`
+  - `updatePlan / removePlan / removeTour` in `plansRepository.ts`
+- *Removed* (no longer referenced by UI):
+  - `POST /api/listings/:listingId/unlock` route
+  - `GET /api/me/preferences` + `PUT /api/me/preferences` routes
+  - `backend/src/lib/repositories/userPreferencesRepository.ts` (deleted)
+  - All `lockStatus / lockedSlot / lockedAt` reads/writes in `plansRepository.ts`, `proposalsService.ts`, `conversationsMock.ts`
+  - Step 0 "honor user-pinned slots" + `lockedInBlock` retry in `planSchedule.ts`
+  - `persona` parameter on `buildSystemPrompt` + `getMyPreferences()` injection in `schedulingAgent.ts`
+- *Migrations deleted from source tree* (DB rows persist — see drift note below):
+  - `backend/supabase/migrations/2026-06-05-listing-locks.sql`
+  - `backend/supabase/migrations/2026-06-06-user-preferences.sql`
+- *Preserved* (not coupled to lock/persona; useful regardless):
+  - `appendConversationsForTour` helper + seed-on-import idempotent mock (so re-running scheduling never rewrites already-seeded conversations)
+  - `applyProposal()` `.select('id')` defensive check (catches silent half-applies when RLS hides the row)
+  - Deploy slim-down (Dockerfile without Playwright/Chromium runtime, deploy/rollback scripts)
+
+**DB ↔ code drift (action required, not yet done)**: prod listings table still has `lock_status / locked_slot / locked_at` columns; prod still has `user_preferences` table + RLS policies + trigger. Code no longer references any of them. Should write a down-migration but **first audit existing data** — there may be rows with `lock_status='user_locked'` from earlier testing that would need to be inspected before being dropped.
+
+**Verification**:
+- `backend npx tsc --noEmit` → exit 0
+- `web npx tsc -b` → exit 0
+- PATCH/DELETE routes verified live on local backend via curl (401 = route registered, just no token)
+- `lockStatus|lockedSlot|locked_status|user_preferences|persona` grep across `backend/src/` → empty
+
+**Not yet done**:
+- Commit. All 22 file changes (12 modified + 2 deleted + 2 deleted-migrations + new `AGENTS.md` + new `HANDOFF.md`) are staged but not committed.
+- Push to remote — branch is `ahead 6, behind 0` after merge.
+- End-to-end smoke test against the new Plan/Tour CRUD UI paths.
+- DB cleanup migration.
+
+**Also updated**: `HANDOFF.md` (new — single entry point for the next agent), `DEV_PLAN.md` (M4 reclassified from "not started" to "retracted").
+
+---
+
 ## 2026-06-04 (later) — M2 phase-2 + M3: chat-with-Butler is live (read + write tools + Apply/Discard UI)
 
 Conversational scheduling refinement is end-to-end functional. After a scheduling run completes, the right-side dock auto-switches to a "Butler" chat panel where the user can ask questions, request changes, and click Apply/Discard on proposed mutations.

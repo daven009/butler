@@ -33,15 +33,23 @@ import {
   listToursByPlan,
   pgToBusinessListing,
   removeListingFromTour,
+  removePlan,
+  removeTour,
   shareRoute,
-  startSchedulingRun,
   retrySchedulingRun,
+  updatePlan,
+  updateTour,
 } from './lib/repositories/plansRepository';
-import { seedTourConversations } from './lib/repositories/conversationsMock';
-import { runWithUser, getCurrentJwt } from './lib/userContext';
+import { isValidTourAvailability } from './lib/tourAvailability';
+import {
+  markAvailabilityMismatches,
+  seedTourConversations,
+} from './lib/repositories/conversationsMock';
+import { runWithUser } from './lib/userContext';
 import { STEP_DEFS } from './lib/scheduling/schedulerSteps';
 import {
   appendMessage,
+  getListingBrief,
   getOrOpenSession,
   getSession,
   listMessagesForSession,
@@ -49,19 +57,26 @@ import {
   markProposalDiscarded,
 } from './lib/repositories/schedulingSessionsRepository';
 import { runAgentTurn } from './lib/llm/schedulingAgent';
+import { parseNaturalLanguageAvailability } from './lib/llm/availabilityParser';
 import { applyProposal } from './lib/scheduling/proposalsService';
-import {
-  DEFAULT_BUTLER_PERSONA,
-  getMyPreferences,
-  upsertMyPreferences,
-} from './lib/repositories/userPreferencesRepository';
-import { verifyToken, supabaseAdmin, supabaseForUser } from './lib/supabase';
+import { verifyToken, supabaseAdmin } from './lib/supabase';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
 
 app.use(cors());
 app.use(express.json());
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === 'object') {
+    const candidate = error as { message?: unknown; details?: unknown; code?: unknown };
+    const parts = [candidate.message, candidate.details, candidate.code]
+      .filter((value): value is string => typeof value === 'string' && value.length > 0);
+    if (parts.length) return parts.join(' · ');
+  }
+  return fallback;
+}
 
 /**
  * Express middleware: extract Bearer token, verify against Supabase Auth,
@@ -137,10 +152,75 @@ app.post('/api/plans', async (req, res) => {
   return res.status(201).json({ plan });
 });
 
+app.patch('/api/plans/:planId', async (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+  const { title, clientName, clientWhatsapp, brief } = req.body;
+  if (!title || !clientName) {
+    return sendError(res, 400, 'VALIDATION_FAILED', 'title and clientName are required');
+  }
+  const plan = await updatePlan(req.params.planId, {
+    title,
+    clientName,
+    clientWhatsapp,
+    brief: brief || '',
+  });
+  if (!plan) return notFound(res, 'PLAN_NOT_FOUND', 'Plan not found');
+  return res.status(200).json({ plan });
+});
+
+app.delete('/api/plans/:planId', async (req, res) => {
+  const ok = await removePlan(req.params.planId);
+  if (!ok) return notFound(res, 'PLAN_NOT_FOUND', 'Plan not found');
+  return res.status(204).send();
+});
+
 app.get('/api/plans/:planId/tours', async (req, res) => {
   const plan = await getPlanById(req.params.planId);
   if (!plan) return notFound(res, 'PLAN_NOT_FOUND', 'Plan not found');
   return res.status(200).json({ tours: await listToursByPlan(req.params.planId) });
+});
+
+app.post('/api/availability/parse', async (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+  const text = typeof req.body.text === 'string' ? req.body.text.trim() : '';
+  const referenceDate = typeof req.body.referenceDate === 'string'
+    ? req.body.referenceDate
+    : undefined;
+  const messages = Array.isArray(req.body.messages)
+    ? req.body.messages
+        .filter((message: unknown) =>
+          Boolean(message) &&
+          typeof message === 'object' &&
+          ['user', 'assistant'].includes((message as { role?: string }).role || '') &&
+          typeof (message as { content?: unknown }).content === 'string',
+        )
+        .map((message: { role: 'user' | 'assistant'; content: string }) => ({
+          role: message.role,
+          content: message.content,
+        }))
+    : [];
+  if (!text) {
+    return res.status(200).json({
+      result: {
+        status: 'invalid',
+        rules: [],
+        summary: '',
+        message: '请填写买家可以看房的日期和时间。',
+      },
+    });
+  }
+  try {
+    const result = await parseNaturalLanguageAvailability(text, referenceDate, messages);
+    return res.status(200).json({ result });
+  } catch (error) {
+    console.error('[availability] parse failed:', (error as Error).message);
+    return sendError(
+      res,
+      502,
+      'AVAILABILITY_PARSE_FAILED',
+      'AI 暂时无法判断这个时间，请稍后重试。',
+    );
+  }
 });
 
 app.post('/api/plans/:planId/tours', async (req, res) => {
@@ -156,6 +236,14 @@ app.post('/api/plans/:planId/tours', async (req, res) => {
       'title, targetDate, and timeWindow are required',
     );
   }
+  if (!isValidTourAvailability(targetDate, timeWindow)) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_FAILED',
+      'timeWindow must contain valid parsed buyer availability rules',
+    );
+  }
   const tour = await createTourForPlan(req.params.planId, {
     title,
     targetDate,
@@ -163,6 +251,42 @@ app.post('/api/plans/:planId/tours', async (req, res) => {
     command: typeof command === 'string' ? command : '',
   });
   return res.status(201).json({ tour });
+});
+
+app.patch('/api/tours/:tourId', async (req, res) => {
+  if (!requireJsonObject(req, res)) return;
+  const { title, targetDate, timeWindow, command } = req.body;
+  if (!title || !targetDate || !timeWindow) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_FAILED',
+      'title, targetDate, and timeWindow are required',
+    );
+  }
+  if (!isValidTourAvailability(targetDate, timeWindow)) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_FAILED',
+      'timeWindow must contain valid parsed buyer availability rules',
+    );
+  }
+  const tour = await updateTour(req.params.tourId, {
+    title,
+    targetDate,
+    timeWindow,
+    command: typeof command === 'string' ? command : '',
+  });
+  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
+  await markAvailabilityMismatches(tour.id);
+  return res.status(200).json({ tour });
+});
+
+app.delete('/api/tours/:tourId', async (req, res) => {
+  const ok = await removeTour(req.params.tourId);
+  if (!ok) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
+  return res.status(204).send();
 });
 
 // ── Listings ───────────────────────────────────────────────────────────────
@@ -311,7 +435,10 @@ app.post('/api/tours/:tourId/import', async (req, res) => {
     // here (rather than at scheduling time) so the data is stable from
     // the moment the user imports a listing.
     try {
-      await seedTourConversations(req.params.tourId);
+      await seedTourConversations(req.params.tourId, undefined, {
+        deferSchedulingState: true,
+      });
+      await markAvailabilityMismatches(req.params.tourId);
     } catch (e) {
       console.warn('[tour-import] seed-after-import failed (non-fatal):', (e as Error).message);
     }
@@ -374,17 +501,14 @@ app.post('/api/tours/:tourId/import-from-extension', async (req, res) => {
     let llmFields: any[] = [];
     try {
       llmFields = await llmParsePgListings(
-        incoming.map((item: any) => {
-          const rawText = String(item.rawText || '');
-          const description = String(item.detail?.description || '');
-          const combined = description
-            ? `${rawText}\n\n--- About this property ---\n${description}`
-            : rawText;
-          return {
-            listingId: String(item.listingId || item.url || ''),
-            rawText: combined,
-          };
-        }),
+        incoming.map((item: any) => ({
+          listingId: String(item.listingId || item.url || ''),
+          rawText: String(item.rawText || ''),
+          title: String(item.title || ''),
+          address: String(item.address || ''),
+          propertyType: String(item.propertyType || ''),
+          description: String(item.detail?.description || ''),
+        })),
       );
       console.log('[ext-import] llm parsed', llmFields.length, 'rows');
     } catch (error) {
@@ -441,7 +565,10 @@ app.post('/api/tours/:tourId/import-from-extension', async (req, res) => {
     // imported listings. Idempotent — already-seeded listings stay
     // frozen so re-imports / re-runs don't perturb mock data.
     try {
-      await seedTourConversations(req.params.tourId);
+      await seedTourConversations(req.params.tourId, undefined, {
+        deferSchedulingState: true,
+      });
+      await markAvailabilityMismatches(req.params.tourId);
     } catch (e) {
       console.warn('[ext-import] seed-after-import failed (non-fatal):', (e as Error).message);
     }
@@ -471,19 +598,37 @@ app.post('/api/tours/:tourId/import-from-extension', async (req, res) => {
 // ── Conversations / scheduling workflow ───────────────────────────────────
 
 app.post('/api/tours/:tourId/conversations/seed', async (req, res) => {
-  const tour = await getTourDetail(req.params.tourId);
-  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  const agentName = typeof req.body?.agentName === 'string' ? req.body.agentName : undefined;
-  const result = await seedTourConversations(req.params.tourId, agentName);
-  console.log('[seed] tour', req.params.tourId, result);
-  return res.status(200).json(result);
+  try {
+    const tour = await getTourDetail(req.params.tourId);
+    if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
+    if (!isValidTourAvailability(tour.targetDate, tour.timeWindow)) {
+      return sendError(
+        res,
+        409,
+        'BUYER_AVAILABILITY_REQUIRED',
+        'Buyer availability is missing or invalid. Edit the Tour and confirm a concrete date/time before scheduling.',
+      );
+    }
+    const agentName = typeof req.body?.agentName === 'string' ? req.body.agentName : undefined;
+    const result = await seedTourConversations(req.params.tourId, agentName, {
+      force: req.body?.force === true,
+    });
+    await markAvailabilityMismatches(req.params.tourId);
+    console.log('[seed] tour', req.params.tourId, result);
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('[seed] failed:', error);
+    return sendError(res, 500, 'SEED_FAILED', errorMessage(error, 'Conversation seed failed'));
+  }
 });
 
 app.post('/api/tours/:tourId/scheduling-runs', async (req, res) => {
-  const tour = await getTourDetail(req.params.tourId);
-  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  const run = await startSchedulingRun(req.params.tourId);
-  return res.status(201).json({ run });
+  return sendError(
+    res,
+    409,
+    'LISTING_BRIEF_REQUIRED',
+    'Tour-level scheduling is retired. Finalize a listing scheduling brief to generate or update the Tour proposal.',
+  );
 });
 
 app.get('/api/scheduling-runs/:runId', async (req, res) => {
@@ -524,19 +669,37 @@ app.get('/api/scheduling-steps', (_req, res) => {
 
 /* ─── Scheduling chat sessions (Phase 2B / §8.6.3) ──────────────────────── */
 
-/**
- * Open or fetch the chat session for a tour. We allow at most one open
- * session per (tour, user) — repeated calls return the existing one. The
- * optional `runId` records which scheduling_run spawned the conversation
- * (for diagnostics when the user complains the agent referred to stale
- * schedule state).
- */
+/** Open or fetch the isolated Listing Engine thread for one listing. */
 app.post('/api/tours/:tourId/scheduling-sessions', async (req, res) => {
-  const tour = await getTourDetail(req.params.tourId);
-  if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
-  const runId = typeof req.body?.runId === 'string' ? req.body.runId : undefined;
-  const session = await getOrOpenSession(req.params.tourId, runId);
-  return res.status(200).json({ session });
+  try {
+    const tour = await getTourDetail(req.params.tourId);
+    if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
+    const runId = typeof req.body?.runId === 'string' ? req.body.runId : undefined;
+    const listingId =
+      typeof req.body?.listingId === 'string' ? req.body.listingId : undefined;
+    if (!listingId) {
+      return sendError(
+        res,
+        400,
+        'LISTING_ID_REQUIRED',
+        'Scheduling sessions are listing-scoped; listingId is required.',
+      );
+    }
+    const listings = await listListingsByTour(req.params.tourId);
+    if (!listings.some((listing) => listing.id === listingId)) {
+      return notFound(res, 'LISTING_NOT_FOUND', 'Listing not found in this tour');
+    }
+    const session = await getOrOpenSession(req.params.tourId, runId, listingId);
+    return res.status(200).json({ session });
+  } catch (error) {
+    console.error('[session] open failed:', error);
+    return sendError(res, 500, 'SESSION_OPEN_FAILED', errorMessage(error, 'Session open failed'));
+  }
+});
+
+app.get('/api/tours/:tourId/listings/:listingId/scheduling-brief', async (req, res) => {
+  const brief = await getListingBrief(req.params.tourId, req.params.listingId);
+  return res.status(200).json({ brief: brief ?? null });
 });
 
 /** Full message history for a session (chronological). */
@@ -563,14 +726,42 @@ app.get('/api/scheduling-sessions/:sessionId/messages', async (req, res) => {
 app.post('/api/scheduling-sessions/:sessionId/messages', async (req, res) => {
   if (!requireJsonObject(req, res)) return;
   const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+  const focusedListingId =
+    typeof req.body?.context?.listingId === 'string'
+      ? req.body.context.listingId
+      : undefined;
   if (!text) {
     return sendError(res, 400, 'VALIDATION_FAILED', 'text is required');
   }
   const session = await getSession(req.params.sessionId);
   if (!session) return notFound(res, 'SESSION_NOT_FOUND', 'Session not found');
+  if (!session.listingId) {
+    return sendError(
+      res,
+      409,
+      'LISTING_SESSION_REQUIRED',
+      'Global Tour conversations are read-only. Continue from a listing scheduling session.',
+    );
+  }
+  if (
+    session.listingId &&
+    focusedListingId &&
+    session.listingId !== focusedListingId
+  ) {
+    return sendError(
+      res,
+      409,
+      'SESSION_LISTING_MISMATCH',
+      'This conversation belongs to a different listing.',
+    );
+  }
 
   try {
-    const assistantMsg = await runAgentTurn(req.params.sessionId, text);
+    const assistantMsg = await runAgentTurn(
+      req.params.sessionId,
+      text,
+      session.listingId ?? focusedListingId,
+    );
     const messages = await listMessagesForSession(req.params.sessionId);
     const refreshedSession = await getSession(req.params.sessionId);
     return res.status(200).json({
@@ -620,10 +811,7 @@ app.post('/api/scheduling-proposals/:proposalId/discard', async (req, res) => {
  * Errors:
  *   404 PROPOSAL_NOT_FOUND      - id doesn't exist (or RLS-hidden)
  *   409 PROPOSAL_ALREADY_APPLIED|DISCARDED
- *   409 PROPOSAL_REQUIRES_FULL_REPLAN — proposal mode='full' (cascade
- *                                  changes); UI should re-run scheduling
- *                                  manually until M2 phase-3 wires this
- *                                  up to a constrained planSchedule re-run.
+ *   409 PROPOSAL_STALE|PROPOSAL_HAS_NO_CHANGES|PROPOSAL_INCOMPLETE
  */
 app.post('/api/scheduling-proposals/:proposalId/apply', async (req, res) => {
   try {
@@ -638,8 +826,11 @@ app.post('/api/scheduling-proposals/:proposalId/apply', async (req, res) => {
     if (
       msg === 'PROPOSAL_ALREADY_APPLIED' ||
       msg === 'PROPOSAL_ALREADY_DISCARDED' ||
-      msg === 'PROPOSAL_REQUIRES_FULL_REPLAN' ||
-      msg === 'PROPOSAL_APPLY_NO_ROWS'
+      msg === 'PROPOSAL_APPLY_NO_ROWS' ||
+      msg === 'PROPOSAL_STALE' ||
+      msg === 'PROPOSAL_HAS_NO_CHANGES' ||
+      msg === 'PROPOSAL_INCOMPLETE' ||
+      msg === 'PROPOSAL_TIME_CONFLICT'
     ) {
       return sendError(res, 409, msg, msg.replace(/_/g, ' ').toLowerCase());
     }
@@ -652,62 +843,6 @@ app.post('/api/scheduling-proposals/:proposalId/apply', async (req, res) => {
  * can move it again. The listing's `suggested_time` is preserved for
  * read consistency; the next planSchedule call decides what to do.
  */
-app.post('/api/listings/:listingId/unlock', async (req, res) => {
-  try {
-    const c = supabaseForUser(getCurrentJwt());
-    const { data, error } = await c
-      .from('listings')
-      .update({ lock_status: null, locked_slot: null, locked_at: null })
-      .eq('id', req.params.listingId)
-      .select('id');
-    if (error) throw error;
-    if (!data || data.length === 0) {
-      return notFound(res, 'LISTING_NOT_FOUND', 'Listing not found');
-    }
-    return res.status(200).json({ ok: true });
-  } catch (err) {
-    console.error('[listing] unlock failed:', (err as Error).message);
-    return sendError(res, 500, 'UNLOCK_FAILED', (err as Error).message);
-  }
-});
-
-/**
- * User preferences (Settings → AI rules). Currently just the Butler
- * persona; one row per user, returns default + saved value separately
- * so the UI can show the default as a placeholder.
- */
-app.get('/api/me/preferences', async (_req, res) => {
-  try {
-    const prefs = await getMyPreferences();
-    return res.status(200).json({
-      butlerPersona: prefs.butlerPersona,
-      defaultButlerPersona: DEFAULT_BUTLER_PERSONA,
-      updatedAt: prefs.updatedAt ?? null,
-    });
-  } catch (err) {
-    console.error('[me] get preferences failed:', (err as Error).message);
-    return sendError(res, 500, 'PREFS_GET_FAILED', (err as Error).message);
-  }
-});
-
-app.put('/api/me/preferences', async (req, res) => {
-  if (!requireJsonObject(req, res)) return;
-  try {
-    const body = req.body as { butlerPersona?: string | null };
-    const prefs = await upsertMyPreferences({
-      butlerPersona: body.butlerPersona ?? null,
-    });
-    return res.status(200).json({
-      butlerPersona: prefs.butlerPersona,
-      defaultButlerPersona: DEFAULT_BUTLER_PERSONA,
-      updatedAt: prefs.updatedAt ?? null,
-    });
-  } catch (err) {
-    console.error('[me] put preferences failed:', (err as Error).message);
-    return sendError(res, 500, 'PREFS_PUT_FAILED', (err as Error).message);
-  }
-});
-
 app.get('/api/tours/:tourId/conversations', async (req, res) => {
   const messages = await listConversationsByTour(req.params.tourId);
   const byListing: Record<string, any[]> = {};

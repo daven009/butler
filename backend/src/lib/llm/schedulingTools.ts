@@ -13,6 +13,10 @@
  */
 
 import {
+  listReadyListingBriefs,
+  upsertListingBrief,
+} from '../repositories/schedulingSessionsRepository';
+import {
   type Listing,
   listListingsByTour,
   getTourDetail,
@@ -28,6 +32,13 @@ import {
   type ProposeSwapArgs,
 } from '../scheduling/proposalsService';
 import type { SchedulingToolName } from './schedulingToolDefs';
+
+interface SubmitListingBriefArgs {
+  priority?: 'low' | 'normal' | 'high';
+  summary: string;
+  constraints: ProposeAddConstraintArgs['constraints'];
+  flexibility?: Record<string, unknown>;
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -185,7 +196,7 @@ async function tool_get_travel_time(args: { from: string; to: string }, tourId: 
 export async function runTool(
   name: SchedulingToolName,
   args: Record<string, unknown>,
-  ctx: { tourId: string; sessionId: string },
+  ctx: { tourId: string; sessionId: string; focusedListingId?: string },
 ): Promise<unknown> {
   switch (name) {
     case 'get_schedule':
@@ -196,8 +207,51 @@ export async function runTool(
       return tool_get_unscheduled_reason(args as { listing_id: string }, ctx.tourId);
     case 'get_travel_time':
       return tool_get_travel_time(args as { from: string; to: string }, ctx.tourId);
+    case 'submit_listing_brief': {
+      if (!ctx.focusedListingId) {
+        return { error: 'A listing-scoped session is required to submit a brief.' };
+      }
+      const input = args as unknown as SubmitListingBriefArgs;
+      if (!input.summary?.trim()) {
+        return { error: 'A concise scheduling brief summary is required.' };
+      }
+      const explicitConstraints = Array.isArray(input.constraints) ? input.constraints : [];
+      const constraints: NonNullable<ProposeAddConstraintArgs['constraints']> = [
+        { type: 'include_listing', listing_id: ctx.focusedListingId },
+        { type: 'preserve_confirmed' },
+        ...explicitConstraints.map((constraint) => ({
+          ...constraint,
+          listing_id:
+            constraint.scope === 'tour'
+              ? undefined
+              : ctx.focusedListingId,
+        })),
+      ];
+      const readyBefore = await listReadyListingBriefs(ctx.tourId);
+      const tourInitialized = readyBefore.length === 0;
+      const brief = await upsertListingBrief({
+        tourId: ctx.tourId,
+        listingId: ctx.focusedListingId,
+        sessionId: ctx.sessionId,
+        status: 'ready',
+        priority: input.priority,
+        constraints,
+        flexibility: input.flexibility,
+        summary: input.summary,
+      });
+      const proposal = await buildAddConstraintProposal({ constraints }, ctx);
+      if ('error' in proposal) {
+        return { ...proposal, briefVersion: brief.version, tourInitialized: false };
+      }
+      return {
+        ...proposal,
+        briefVersion: brief.version,
+        tourInitialized,
+        readyListingCount: readyBefore.length + 1,
+      };
+    }
 
-    // Write tools — implemented in proposalsService.ts. They create a
+    // Tour-level write tools — implemented in proposalsService.ts. They create a
     // schedule_change_proposals row and return it; nothing mutates yet.
     // The chat UI renders the proposal as a diff card with Apply/Discard;
     // Apply hits POST /scheduling-proposals/:id/apply which calls

@@ -12,6 +12,10 @@
  * Batching: we send up to N listings in one call to amortise latency.
  */
 import OpenAI from 'openai';
+import {
+  extractPgAgentContactText,
+  extractPrimaryPgListingText,
+} from '../propertyGuruText';
 
 let _openai: OpenAI | null = null;
 function getOpenAI(): OpenAI {
@@ -73,7 +77,12 @@ For EACH listing, output JSON with exactly these fields:
 - coAgentName:   Real personal name of the listing agent. NOT a marketing headline, NOT "PROMOTED", NOT a rating number. NOT nav-bar items like "Buy" / "Rent". EMPTY STRING if cannot tell.
 - coAgentAgency: Company name (usually ALL CAPS, "PTE LTD"). EMPTY STRING if not present.
 
-CRITICAL: ignore the page chrome (nav bar, breadcrumbs, "Show all media", "Photos", "Floor Plan", "Map View", "Property details", "About this property" headings, "Check loan eligibility", "See all details"). Look at content, not page structure.
+SOURCE RULES:
+- Structured metadata is authoritative when supplied.
+- "Primary listing content" contains the listing header, property details and agent-written description. A condo/project name must be supported by that section.
+- "Agent contact section" may be used only for coAgentName and coAgentAgency.
+- Never use FAQs, recommendations, similar listings, project-directory copy, footer text or page chrome as field values.
+- Do not treat an address as a condo/project name. HDB listings may still have a named development, but only return it when the primary listing content explicitly names it.
 
 Output JSON shape: {"results": [{"condo":"","address":"","area":"","coAgentName":"","coAgentAgency":""}, ...]}
 Output one result object per input listing in the SAME ORDER as input.
@@ -83,6 +92,10 @@ export interface PgInputItem {
   /** Anything that uniquely identifies this listing within the batch — used only to keep order. */
   listingId: string;
   rawText: string;
+  title?: string;
+  address?: string;
+  propertyType?: string;
+  description?: string;
 }
 
 /**
@@ -115,7 +128,21 @@ async function parseOneBatch(
 ): Promise<PgListingFields[]> {
   const openai = getOpenAI();
   const userContent = batch
-    .map((item, idx) => `[Listing ${idx}] id=${item.listingId}\n${item.rawText}`)
+    .map((item, idx) => {
+      const primaryText = extractPrimaryPgListingText(item.rawText);
+      const agentText = extractPgAgentContactText(item.rawText);
+      return [
+        `[Listing ${idx}] id=${item.listingId}`,
+        '[Structured metadata]',
+        `Title: ${item.title || ''}`,
+        `Address: ${item.address || ''}`,
+        `Property type: ${item.propertyType || ''}`,
+        '[Primary listing content]',
+        primaryText,
+        item.description ? `[Agent description]\n${item.description}` : '',
+        agentText ? `[Agent contact section]\n${agentText}` : '',
+      ].filter(Boolean).join('\n');
+    })
     .join('\n\n---\n\n');
 
   const t0 = Date.now();

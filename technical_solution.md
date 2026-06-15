@@ -5,7 +5,7 @@
 >
 > **Maintenance rule**: after any significant change (data model, routes, deployment topology, secrets, dependencies, dev workflow), update this file in the same turn. Then add a one-paragraph entry to `change_log.md`.
 
-Last updated: **2026-06-01** (post Supabase integration + first Aliyun deploy with auth).
+Last updated: **2026-06-14** (listing briefs are the only scheduling entry point).
 
 ---
 
@@ -92,6 +92,16 @@ Auth-required (`/api/*`):
 | Clients / Settings | `/api/clients/...`, settings endpoints | Local JSON repos (legacy) |
 
 When something "doesn't show up" for a user in production, it's almost always RLS — every Supabase-backed query runs under the user's JWT, so a row without `user_id = auth.uid()` is invisible. This is by design.
+
+### Scheduling chat and import flow
+
+- Extension import remains responsible for immediately seeding idempotent mock co-agent conversations and availability. This is the temporary WhatsApp substitute.
+- The frontend focuses the imported listing, switches to AI Assistant, and opens that listing's `scheduling_sessions` conversation. Session creation requires `listingId`; new global Tour conversations are rejected.
+- The Listing LLM interprets natural language and finalizes a structured brief through `submit_listing_brief`. It never mutates listings or directly invokes Tour-level proposal tools.
+- The first ready brief creates the initial Tour proposal. Every later brief loads all ready briefs and jointly replans all ready, unconfirmed listings.
+- Confirmed listings are immutable inputs to this replan. Their persisted slots plus a 15-minute buffer are subtracted from buyer availability before `planSchedule` handles the remaining candidates.
+- Apply accepts local proposals and complete full-tour proposals. Unknown cascade destinations, stale source slots, and empty proposals return 409.
+- `planSchedule` is a deterministic greedy/cluster heuristic. It optimizes the whole current candidate set under fixed confirmed slots, but does not provide a mathematical global-optimum guarantee.
 
 ---
 
@@ -305,3 +315,11 @@ Git history on `origin/staging` of `daven009/butler` includes 4 commits authored
 8. **When adding a new `/api/*` route**, it inherits `requireUser` automatically. If you need a public route, declare it BEFORE `app.use('/api', requireUser)` (e.g. `/api/share/:token` is declared above).
 9. **When changing the extension's externally_connectable origins**, also rebump `manifest.json` version, repackage the zip, and (if published) re-upload to the Web Store.
 10. **Update `change_log.md`** at the end of any task that satisfies (1)-(9).
+## 13. Listing LLM and Tour Engine boundary
+
+Butler scheduling now has two explicit ownership layers:
+
+- **Listing Engine (LLM)**: one `scheduling_sessions` row and message history per listing. It clarifies natural-language scheduling requirements and calls `submit_listing_brief` only when the requirements are sufficiently clear.
+- **Tour Engine (deterministic)**: after every finalized brief, loads all ready briefs plus current Tour state, buyer availability, seller availability, confirmed viewings, coordinates, and travel buffers. It jointly replans all ready unconfirmed listings through `proposalsService` / `planSchedule`; it does not infer user intent from chat history.
+
+The structured brief, rather than the raw LLM transcript, is the contract between the two layers. Confirmed viewing slots are hard constraints, proposals require explicit Apply, and infeasible listings remain in the Tour with an explanation. Because the scheduler is greedy and confirmed slots cannot move, “global” here means optimizing all currently ready candidates under those locks, not proving an unconstrained mathematical optimum.

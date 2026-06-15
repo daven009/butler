@@ -67,12 +67,6 @@ create table if not exists public.listings (
   lat               double precision,
   lng               double precision,
   agent_reachable   boolean,
-  -- Lock state set by chat-with-Butler "Apply" (M4 §8.6). null/unlocked
-  -- means the scheduler is free to re-assign; 'user_locked' pins this
-  -- listing to `locked_slot` across re-runs until the user unlocks it.
-  lock_status       text,
-  locked_slot       text,
-  locked_at         timestamptz,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   -- Same PG listing should not be imported into the same tour twice.
@@ -140,6 +134,7 @@ create table if not exists public.attention_items (
 create table if not exists public.scheduling_sessions (
   id            uuid primary key default gen_random_uuid(),
   tour_id       uuid not null references public.tours(id) on delete cascade,
+  listing_id    uuid references public.listings(id) on delete cascade,
   user_id       uuid not null references auth.users(id) on delete cascade,
   run_id        uuid references public.scheduling_runs(id) on delete set null,
   status        text not null default 'open',
@@ -150,6 +145,53 @@ create table if not exists public.scheduling_sessions (
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
+
+create table if not exists public.listing_scheduling_briefs (
+  id           uuid primary key default gen_random_uuid(),
+  tour_id      uuid not null references public.tours(id) on delete cascade,
+  listing_id   uuid not null references public.listings(id) on delete cascade,
+  user_id      uuid not null references auth.users(id) on delete cascade,
+  session_id   uuid not null references public.scheduling_sessions(id) on delete cascade,
+  status       text not null default 'clarifying'
+               check (status in ('clarifying', 'ready')),
+  priority     text not null default 'normal'
+               check (priority in ('low', 'normal', 'high')),
+  constraints  jsonb not null default '[]'::jsonb,
+  flexibility  jsonb not null default '{}'::jsonb,
+  summary      text,
+  version      int not null default 1,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  unique (tour_id, listing_id, user_id)
+);
+
+create index if not exists scheduling_sessions_listing_idx
+  on public.scheduling_sessions(listing_id);
+create unique index if not exists scheduling_sessions_open_listing_unique
+  on public.scheduling_sessions(tour_id, listing_id, user_id)
+  where status = 'open' and listing_id is not null;
+create unique index if not exists scheduling_sessions_open_tour_unique
+  on public.scheduling_sessions(tour_id, user_id)
+  where status = 'open' and listing_id is null;
+
+create or replace function public._bump_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end$$;
+
+drop trigger if exists scheduling_sessions_updated_at
+  on public.scheduling_sessions;
+create trigger scheduling_sessions_updated_at
+  before update on public.scheduling_sessions
+  for each row execute function public._bump_updated_at();
+
+drop trigger if exists listing_scheduling_briefs_updated_at
+  on public.listing_scheduling_briefs;
+create trigger listing_scheduling_briefs_updated_at
+  before update on public.listing_scheduling_briefs
+  for each row execute function public._bump_updated_at();
 
 create table if not exists public.scheduling_session_messages (
   id              uuid primary key default gen_random_uuid(),
@@ -255,6 +297,10 @@ alter table public.routes           enable row level security;
 alter table public.scheduling_runs  enable row level security;
 alter table public.attention_items  enable row level security;
 alter table public.share_tokens     enable row level security;
+alter table public.scheduling_sessions enable row level security;
+alter table public.scheduling_session_messages enable row level security;
+alter table public.schedule_change_proposals enable row level security;
+alter table public.listing_scheduling_briefs enable row level security;
 
 -- Helper: drop+recreate the standard "user owns row" policy on a table.
 do $$
@@ -263,7 +309,9 @@ declare
 begin
   for t in select unnest(array[
     'plans','tours','listings','conversations','routes',
-    'scheduling_runs','attention_items','share_tokens'
+    'scheduling_runs','attention_items','share_tokens',
+    'scheduling_sessions','scheduling_session_messages',
+    'schedule_change_proposals','listing_scheduling_briefs'
   ]) loop
     execute format('drop policy if exists owner_select on public.%I;', t);
     execute format('drop policy if exists owner_insert on public.%I;', t);

@@ -23,15 +23,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, Send, Loader2, Check, X } from 'lucide-react'
 import * as api from '@/api'
+import type { SellerTimeWindow } from '@/domain'
 
 interface Props {
   sessionId: string
+  focusedListingId?: string
+  focusedListingName?: string
+  focusedListingAvailability?: SellerTimeWindow[]
   /** Called after a successful Apply — parent refreshes listings + schedule. */
   onProposalApplied?: () => void
   /** Optional: called when session boots so parent can show "Butler is here" feedback. */
   onSessionReady?: (session: api.SchedulingSession) => void
-  /** When the parent dock already shows a Butler tab/header, hide our own. */
-  hideHeader?: boolean
 }
 
 interface ProposalCardEntry {
@@ -42,12 +44,15 @@ interface ProposalCardEntry {
 }
 
 /**
- * Try to parse a tool message's `toolResult` into a proposal. Returns
- * null when this tool wasn't a propose_* call (or the result was an error).
+ * Try to parse a proposal-producing tool result. Returns null for read
+ * tools and failed brief/proposal calls.
  */
 function tryExtractProposal(msg: api.SessionMessage): api.ScheduleChangeProposal | null {
   if (msg.role !== 'tool') return null
-  if (!msg.toolName?.startsWith('propose_')) return null
+  if (
+    !msg.toolName?.startsWith('propose_') &&
+    msg.toolName !== 'submit_listing_brief'
+  ) return null
   const r = msg.toolResult as { id?: string; changes?: unknown } | undefined
   if (!r || typeof r !== 'object') return null
   // Proposals serialize with all the fields; we accept anything with an id
@@ -61,26 +66,48 @@ function tryExtractProposal(msg: api.SessionMessage): api.ScheduleChangeProposal
 
 /** Pretty-print a proposal change for the diff card. */
 function fmtChange(c: api.ProposalChange): string {
-  if (c.action === 'drop') return `Remove from tour`
+  const label = c.listingLabel || c.listingId.slice(0, 8)
+  if (c.action === 'drop') return `${label}: Remove from tour`
   if (c.action === 'reschedule' || c.action === 'add') {
-    if (c.from && c.to) return `${c.from}  →  ${c.to}`
-    if (c.to) return `Schedule at ${c.to}`
-    if (c.from) return `Remove ${c.from}`
+    if (c.from && c.to) return `${label}: ${c.from}  →  ${c.to}`
+    if (c.to) return `${label}: Schedule at ${c.to}`
+    if (c.from) return `${label}: Remove ${c.from}`
   }
-  return c.action
+  return `${label}: ${c.action}`
 }
 
-export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, hideHeader = false }: Props) {
+function formatToolError(error: string): string {
+  const preservePrefix =
+    'The requested constraints cannot preserve all confirmed listings: '
+  if (error.startsWith(preservePrefix)) {
+    const listings = error.slice(preservePrefix.length)
+    return `当前要求会影响已确认的房源 ${listings}，因此没有生成变更方案。请调整时间限制，或明确允许移动该房源。`
+  }
+  return error
+}
+
+export function SchedulingChat({
+  sessionId,
+  focusedListingId,
+  focusedListingName,
+  focusedListingAvailability,
+  onProposalApplied,
+  onSessionReady,
+}: Props) {
   const [messages, setMessages] = useState<api.SessionMessage[]>([])
   const [proposalsById, setProposalsById] = useState<Record<string, ProposalCardEntry>>({})
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const availabilityLabel = formatSellerAvailability(focusedListingAvailability)
 
   // ── Initial fetch — get session + history ──
   useEffect(() => {
     let cancelled = false
+    setMessages([])
+    setProposalsById({})
+    setError(null)
     api
       .fetchSessionMessages(sessionId)
       .then(({ session, messages: msgs }) => {
@@ -143,7 +170,11 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, h
     }
     setMessages((prev) => [...prev, optimistic])
     try {
-      const { messages: fresh } = await api.sendSchedulingMessage(sessionId, text)
+      const { messages: fresh } = await api.sendSchedulingMessage(
+        sessionId,
+        text,
+        { listingId: focusedListingId },
+      )
       setMessages(fresh)
     } catch (e) {
       setError((e as Error).message)
@@ -219,23 +250,53 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, h
   type RenderItem =
     | { kind: 'user'; key: string; text: string }
     | { kind: 'assistant'; key: string; text: string }
-    | { kind: 'tool-trace'; key: string; toolName: string }
+    | { kind: 'tool-trace'; key: string; toolName: string; error?: string }
     | { kind: 'proposal-card'; key: string; proposalId: string }
 
   const renderItems: RenderItem[] = useMemo(() => {
     const out: RenderItem[] = []
+    const proposalErrorsInTurn = new Set<string>()
+    let proposalFailedInTurn = false
     for (const m of messages) {
       if (m.role === 'user' && m.content) {
+        proposalErrorsInTurn.clear()
+        proposalFailedInTurn = false
         out.push({ kind: 'user', key: m.id, text: m.content })
       } else if (m.role === 'assistant' && m.content) {
         out.push({ kind: 'assistant', key: m.id, text: m.content })
       } else if (m.role === 'tool') {
+        const skipped =
+          m.toolResult &&
+          typeof m.toolResult === 'object' &&
+          'skipped' in m.toolResult &&
+          m.toolResult.skipped === true
+        if (skipped) continue
         const p = tryExtractProposal(m)
         if (p) {
-          out.push({ kind: 'proposal-card', key: m.id, proposalId: p.id })
+          // A failed proposal ends this user turn. Older sessions may still
+          // contain a contradictory fallback proposal generated afterwards.
+          if (!proposalFailedInTurn) {
+            out.push({ kind: 'proposal-card', key: m.id, proposalId: p.id })
+          }
         } else if (m.toolName) {
           // Read tools — show a tiny "Butler checked X" trace pill.
-          out.push({ kind: 'tool-trace', key: m.id, toolName: m.toolName })
+          const toolError =
+            m.toolResult &&
+            typeof m.toolResult === 'object' &&
+            'error' in m.toolResult &&
+            typeof m.toolResult.error === 'string'
+              ? m.toolResult.error
+              : undefined
+          if (
+            toolError &&
+            (m.toolName.startsWith('propose_') || m.toolName === 'submit_listing_brief')
+          ) {
+            proposalFailedInTurn = true
+            const errorKey = `${m.toolName}:${toolError}`
+            if (proposalErrorsInTurn.has(errorKey)) continue
+            proposalErrorsInTurn.add(errorKey)
+          }
+          out.push({ kind: 'tool-trace', key: m.id, toolName: m.toolName, error: toolError })
         }
       }
       // assistant turns with only tool_calls (no content) → silently skipped;
@@ -248,23 +309,34 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, h
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
       {/* Header */}
-      {!hideHeader && (
-        <div className="flex items-center gap-3 border-b border-[#ebebeb] px-4 py-3">
-          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#fff0f3]">
-            <Bot className="size-4 text-[#ff385c]" />
-          </span>
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-[#222222]">Butler</div>
-            <div className="text-xs text-[#717171]">Ask me to refine this schedule.</div>
+      <div className="flex items-center gap-3 border-b border-[#ebebeb] px-4 py-3">
+        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#fff0f3]">
+          <Bot className="size-4 text-[#ff385c]" />
+        </span>
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-[#222222]">Butler</div>
+          <div className="text-xs text-[#717171]">
+            {focusedListingName
+              ? `正在调整 ${focusedListingName} 和整条线路`
+              : 'Ask me to refine this schedule.'}
           </div>
+          {focusedListingName && (
+            <div className="mt-1 text-xs font-medium text-[#555555]">
+              卖家中介可用时间：{availabilityLabel}
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
       {/* Message stream */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3">
         {!messages.length && !error && (
           <div className="mx-auto max-w-sm pt-4 text-center text-xs text-[#717171]">
-            Try: <span className="font-medium text-[#222222]">"Why isn't Newton Suites scheduled?"</span>
+            Try: <span className="font-medium text-[#222222]">
+              {focusedListingName
+                ? `"这套尽量安排在上午，不要影响已经确认的房源"`
+                : '"Why isn\'t Newton Suites scheduled?"'}
+            </span>
             <br />
             Or: <span className="font-medium text-[#222222]">"Move Scotts Square to 11am"</span>
           </div>
@@ -275,7 +347,7 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, h
             if (it.kind === 'user') {
               return (
                 <li key={it.key} className="flex justify-end">
-                  <div className="max-w-[85%] rounded-2xl rounded-br-md bg-[#222222] px-3.5 py-2 text-sm text-white">
+                  <div className="max-w-[85%] rounded-[6px] rounded-br-md bg-[#222222] px-3.5 py-2 text-sm text-white">
                     {it.text}
                   </div>
                 </li>
@@ -284,7 +356,7 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, h
             if (it.kind === 'assistant') {
               return (
                 <li key={it.key} className="flex justify-start">
-                  <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-md border border-[#ebebeb] bg-white px-3.5 py-2 text-sm text-[#222222]">
+                  <div className="max-w-[85%] whitespace-pre-wrap rounded-[6px] rounded-bl-md border border-[#ebebeb] bg-white px-3.5 py-2 text-sm text-[#222222]">
                     {it.text}
                   </div>
                 </li>
@@ -292,10 +364,17 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, h
             }
             if (it.kind === 'tool-trace') {
               return (
-                <li key={it.key} className="flex justify-center">
-                  <span className="rounded-full bg-[#f7f7f7] px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-[#717171]">
-                    Butler checked · {it.toolName.replace(/^get_/, '').replace(/_/g, ' ')}
+                <li key={it.key} className="flex flex-col items-center gap-1">
+                  <span className={`rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide ${
+                    it.error ? 'bg-[#fff5f7] text-[#c13515]' : 'bg-[#f7f7f7] text-[#717171]'
+                  }`}>
+                    {it.error ? 'Butler could not apply' : 'Butler checked'} · {it.toolName.replace(/^get_/, '').replace(/_/g, ' ')}
                   </span>
+                  {it.error && (
+                    <span className="max-w-[85%] rounded-[6px] border border-[#ffd5de] bg-[#fff5f7] px-3 py-2 text-xs leading-5 text-[#c13515]">
+                      {formatToolError(it.error)}
+                    </span>
+                  )}
                 </li>
               )
             }
@@ -319,7 +398,7 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, h
             </li>
           )}
           {error && (
-            <li className="rounded-xl border border-[#ffd5de] bg-[#fff5f7] px-3 py-2 text-xs text-[#c13515]">
+            <li className="rounded-[6px] border border-[#ffd5de] bg-[#fff5f7] px-3 py-2 text-xs text-[#c13515]">
               {error}
             </li>
           )}
@@ -338,15 +417,19 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, h
                 void handleSend()
               }
             }}
-            placeholder="Ask Butler to adjust the schedule…"
+            placeholder={
+              focusedListingName
+                ? `告诉 Butler 如何安排 ${focusedListingName}…`
+                : 'Ask Butler to adjust the schedule…'
+            }
             rows={1}
-            className="min-h-[40px] flex-1 resize-none rounded-xl border border-[#dddddd] bg-white px-3 py-2 text-sm text-[#222222] outline-none focus:border-[#222222]"
+            className="min-h-[40px] flex-1 resize-none rounded-[6px] border border-[#dddddd] bg-white px-3 py-2 text-sm text-[#222222] outline-none focus:border-[#222222]"
           />
           <button
             type="button"
             disabled={sending || !draft.trim()}
             onClick={() => void handleSend()}
-            className={`flex h-10 w-10 flex-none items-center justify-center rounded-xl text-white transition-colors ${
+            className={`flex h-10 w-10 flex-none items-center justify-center rounded-[6px] text-white transition-colors ${
               sending || !draft.trim() ? 'cursor-not-allowed bg-[#dddddd]' : 'bg-[#ff385c] hover:bg-[#e00b41]'
             }`}
           >
@@ -356,6 +439,23 @@ export function SchedulingChat({ sessionId, onProposalApplied, onSessionReady, h
       </div>
     </div>
   )
+}
+
+function formatSellerAvailability(windows?: SellerTimeWindow[]): string {
+  if (!windows?.length) return '尚未提供'
+  return windows
+    .map((window) => {
+      const date = new Date(`${window.date}T00:00:00`)
+      const dateLabel = Number.isNaN(date.getTime())
+        ? window.date
+        : date.toLocaleDateString('zh-SG', {
+            month: 'numeric',
+            day: 'numeric',
+            weekday: 'short',
+          })
+      return `${dateLabel} ${window.startTime}–${window.endTime}`
+    })
+    .join('；')
 }
 
 // ─── Proposal card ──────────────────────────────────────────────────────
@@ -374,10 +474,16 @@ function ProposalCard({
   const discarded = !!proposal.discardedAt
   const settled = applied || discarded
   const isFull = proposal.mode === 'full'
+  const proposedChanges = [...proposal.changes, ...proposal.cascade]
+  const hasCompleteDestinations = proposedChanges.every(
+    (change) => change.action === 'drop' || Boolean(change.to),
+  )
+  const hasTimeConflict = proposalHasTimeConflict(proposedChanges)
+  const canApply = hasCompleteDestinations && !hasTimeConflict
 
   return (
     <div
-      className={`max-w-[90%] rounded-2xl border p-3 text-sm ${
+      className={`max-w-[90%] rounded-[6px] border p-3 text-sm ${
         applied
           ? 'border-[#d7f4df] bg-[#f3fbf5]'
           : discarded
@@ -388,20 +494,15 @@ function ProposalCard({
       }`}
     >
       <div className="text-xs font-semibold uppercase tracking-wide text-[#717171]">
-        {applied ? 'Applied · Locked' : discarded ? 'Discarded' : isFull ? 'Conflict — manual review' : 'Proposed change'}
+        {applied ? 'Applied' : discarded ? 'Discarded' : isFull ? 'Full tour proposal' : 'Proposed change'}
       </div>
       {proposal.intentSummary && (
         <div className="mt-1 text-[#222222]">{proposal.intentSummary}</div>
       )}
-      {applied && (
-        <div className="mt-1 text-[11px] leading-4 text-[#15803d]">
-          Pinned to this slot — AI scheduling re-runs won't move it. Open the listing to unlock.
-        </div>
-      )}
       {proposal.changes.length > 0 && (
         <ul className="mt-2 flex flex-col gap-1 font-mono text-xs text-[#222222]">
           {proposal.changes.map((c, i) => (
-            <li key={i} className="rounded-lg bg-white/60 px-2 py-1">
+            <li key={i} className="rounded-[6px] bg-white/60 px-2 py-1">
               {fmtChange(c)}
             </li>
           ))}
@@ -414,7 +515,7 @@ function ProposalCard({
           </div>
           <ul className="mt-1 flex flex-col gap-1 font-mono text-xs text-[#9a3412]">
             {proposal.cascade.map((c, i) => (
-              <li key={i} className="rounded-lg bg-white/60 px-2 py-1">
+              <li key={i} className="rounded-[6px] bg-white/60 px-2 py-1">
                 {fmtChange(c)}
               </li>
             ))}
@@ -424,14 +525,21 @@ function ProposalCard({
       {errorMsg && !settled && (
         <div className="mt-2 text-xs text-[#c13515]">{errorMsg}</div>
       )}
-      {!settled && !isFull && (
+      {!settled && !canApply && (
+        <div className="mt-2 text-xs text-[#9a3412]">
+          {hasTimeConflict
+            ? 'This proposal contains overlapping viewing times and cannot be applied.'
+            : 'This conflict needs an exact-time re-plan before it can be applied.'}
+        </div>
+      )}
+      {!settled && (
         <div className="mt-3 flex gap-2">
           <button
             type="button"
-            disabled={!!pendingAction}
+            disabled={!!pendingAction || !canApply}
             onClick={onApply}
-            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#222222] px-3 py-1.5 text-xs font-semibold text-white ${
-              pendingAction ? 'opacity-60' : 'hover:bg-[#000000]'
+            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-[6px] bg-[#222222] px-3 py-1.5 text-xs font-semibold text-white ${
+              pendingAction || !canApply ? 'opacity-60' : 'hover:bg-[#000000]'
             }`}
           >
             {pendingAction === 'apply' ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />}
@@ -441,7 +549,7 @@ function ProposalCard({
             type="button"
             disabled={!!pendingAction}
             onClick={onDiscard}
-            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-[#dddddd] px-3 py-1.5 text-xs font-semibold text-[#222222] ${
+            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-[6px] border border-[#dddddd] px-3 py-1.5 text-xs font-semibold text-[#222222] ${
               pendingAction ? 'opacity-60' : 'hover:bg-[#f7f7f7]'
             }`}
           >
@@ -456,12 +564,36 @@ function ProposalCard({
             type="button"
             disabled={!!pendingAction}
             onClick={onDiscard}
-            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-[#dddddd] bg-white px-3 py-1.5 text-xs font-semibold text-[#222222] hover:bg-[#f7f7f7]"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-[6px] border border-[#dddddd] bg-white px-3 py-1.5 text-xs font-semibold text-[#222222] hover:bg-[#f7f7f7]"
           >
             <X className="size-3" /> Dismiss
           </button>
         </div>
       )}
     </div>
+  )
+}
+
+function proposalHasTimeConflict(changes: api.ProposalChange[]): boolean {
+  const slots = changes
+    .filter((change) => change.action === 'reschedule' || change.action === 'add')
+    .map((change) => {
+      const match = change.to?.match(/(\d{1,2}):(\d{2})\s*[–-]\s*(\d{1,2}):(\d{2})/)
+      if (!match) return null
+      return {
+        date: change.to?.match(/^(\d{4}-\d{2}-\d{2})\s+/)?.[1],
+        start: Number(match[1]) * 60 + Number(match[2]),
+        end: Number(match[3]) * 60 + Number(match[4]),
+      }
+    })
+    .filter((slot): slot is { date: string | undefined; start: number; end: number } => Boolean(slot))
+    .sort((a, b) =>
+      `${a.date || ""} ${a.start}`.localeCompare(`${b.date || ""} ${b.start}`),
+    )
+
+  return slots.some((slot, index) =>
+    index > 0 &&
+    (!slot.date || !slots[index - 1].date || slot.date === slots[index - 1].date) &&
+    slot.start < slots[index - 1].end,
   )
 }

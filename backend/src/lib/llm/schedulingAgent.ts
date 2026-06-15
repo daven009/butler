@@ -24,10 +24,7 @@ import {
   recordTurnUsage,
 } from '../repositories/schedulingSessionsRepository';
 import { getTourDetail, listListingsByTour } from '../repositories/plansRepository';
-import {
-  DEFAULT_BUTLER_PERSONA,
-  getMyPreferences,
-} from '../repositories/userPreferencesRepository';
+import { getBuyerSlotsForTour } from '../repositories/conversationsMock';
 import {
   SCHEDULING_AGENT_MODEL,
   SESSION_LIMITS,
@@ -36,9 +33,9 @@ import {
 } from './openaiClient';
 import {
   SCHEDULING_TOOL_NAMES,
-  SCHEDULING_TOOLS,
   type SchedulingToolName,
   buildSystemPrompt,
+  getSchedulingTools,
 } from './schedulingToolDefs';
 import { runTool } from './schedulingTools';
 import type {
@@ -54,9 +51,13 @@ import type {
 const MAX_TOOL_ROUNDS_PER_TURN = 5;
 
 /** Best-effort scheduler-friendly snippet for the system prompt. */
-async function buildPromptContext(tourId: string) {
+async function buildPromptContext(tourId: string, focusedListingId?: string) {
   const tour = await getTourDetail(tourId);
   const listings = await listListingsByTour(tourId);
+  const sellerDates = listings.flatMap((listing) =>
+    (listing.availability || []).map((slot) => slot.date),
+  );
+  const buyerSlots = await getBuyerSlotsForTour(tourId, sellerDates);
   const scheduled = listings.filter((l) => l.status === 'confirmed' && l.suggestedTime);
   const unscheduled = listings.filter(
     (l) => l.status !== 'confirmed' && l.status !== 'imported',
@@ -70,15 +71,30 @@ async function buildPromptContext(tourId: string) {
   const unscheduledList = unscheduled
     .map((l) => `  - ${l.title} (${l.area}): ${l.attentionReason || 'no slot'}`)
     .join('\n');
+  const focused = focusedListingId
+    ? listings.find((listing) => listing.id === focusedListingId)
+    : undefined;
 
   return {
     buyerName: tour?.title?.replace(/'s tour.*$/i, '') || 'the buyer',
-    targetDate: tour?.targetDate || 'today',
+    targetDate: buyerSlots.length
+      ? buyerSlots.map((slot) => `${slot.date} ${slot.startTime}-${slot.endTime}`).join(', ')
+      : tour?.targetDate || 'not provided',
     totalListings: listings.length,
     scheduledCount: scheduled.length,
     unscheduledCount: unscheduled.length,
     scheduleTable,
     unscheduledList,
+    focusedListing: focused
+      ? [
+          `${focused.title} (${focused.id})`,
+          `area=${focused.area}`,
+          `status=${focused.status}`,
+          `currentTime=${focused.suggestedTime ?? 'not scheduled'}`,
+          `coAgentAvailability=${JSON.stringify(focused.availability ?? [])}`,
+          `attentionReason=${focused.attentionReason ?? 'none'}`,
+        ].join('; ')
+      : undefined,
   };
 }
 
@@ -126,6 +142,45 @@ function isOverBudget(session: SchedulingSession): boolean {
 const BUDGET_EXHAUSTED_REPLY =
   "I've reached this conversation's compute budget. Please confirm the current schedule, or start a fresh scheduling run if you need bigger changes.";
 
+const PROPOSAL_TOOL_NAMES = new Set<SchedulingToolName>([
+  'propose_reschedule',
+  'propose_swap',
+  'propose_drop',
+  'propose_add_constraint',
+  'submit_listing_brief',
+]);
+
+function readToolError(result: unknown): string | undefined {
+  if (!result || typeof result !== 'object' || !('error' in result)) return undefined;
+  const error = (result as { error?: unknown }).error;
+  return typeof error === 'string' ? error : undefined;
+}
+
+function didInitializeTour(result: unknown): boolean {
+  return Boolean(
+    result &&
+    typeof result === 'object' &&
+    'tourInitialized' in result &&
+    (result as { tourInitialized?: unknown }).tourInitialized === true,
+  );
+}
+
+function proposalFailureReply(error: string, userText: string): string {
+  const preservePrefix =
+    'The requested constraints cannot preserve all confirmed listings: ';
+  if (error.startsWith(preservePrefix)) {
+    const listings = error.slice(preservePrefix.length);
+    if (/[\u3400-\u9fff]/u.test(userText)) {
+      return `当前要求无法同时满足：加入这套房源会影响已确认的 ${listings}。由于你要求保留全部已确认房源，我没有生成删除方案；请调整时间限制或明确允许移动该房源。`;
+    }
+    return `These constraints would affect the confirmed listing ${listings}, so I did not create a drop proposal. Adjust the time constraint or explicitly allow that listing to move.`;
+  }
+  if (/[\u3400-\u9fff]/u.test(userText)) {
+    return `当前约束无法生成可行方案：${error}`;
+  }
+  return `I couldn't create a valid proposal: ${error}`;
+}
+
 /**
  * Run one user → assistant turn. Returns the final assistant message that
  * was appended to the session.
@@ -133,9 +188,18 @@ const BUDGET_EXHAUSTED_REPLY =
 export async function runAgentTurn(
   sessionId: string,
   userText: string,
+  focusedListingId?: string,
 ): Promise<SessionMessage> {
   const session = await getSession(sessionId);
   if (!session) throw new Error('SESSION_NOT_FOUND');
+  const sessionListingId = session.listingId ?? focusedListingId;
+  if (
+    session.listingId &&
+    focusedListingId &&
+    session.listingId !== focusedListingId
+  ) {
+    throw new Error('SESSION_LISTING_MISMATCH');
+  }
 
   // 1. Persist the user message immediately.
   await appendMessage(sessionId, { role: 'user', content: userText });
@@ -149,12 +213,10 @@ export async function runAgentTurn(
   }
 
   // 3. Build fresh OpenAI message array.
-  const ctx = await buildPromptContext(session.tourId);
-  // Pull user-customized persona; fall back to the default Butler voice.
-  const prefs = await getMyPreferences().catch(() => ({ butlerPersona: null }));
-  const persona =
-    (prefs.butlerPersona && prefs.butlerPersona.trim()) || DEFAULT_BUTLER_PERSONA;
-  const systemPrompt = buildSystemPrompt({ ...ctx, persona });
+  const ctx = await buildPromptContext(session.tourId, sessionListingId);
+  const listingScoped = Boolean(session.listingId);
+  const systemPrompt = buildSystemPrompt({ ...ctx, listingScoped });
+  const tools = getSchedulingTools(listingScoped);
   const history = await listMessagesForSession(sessionId);
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
@@ -166,6 +228,8 @@ export async function runAgentTurn(
   let cumulativePromptTokens = 0;
   let cumulativeCompletionTokens = 0;
   let finalAssistantText = '';
+  let proposalError: string | undefined;
+  let tourInitialized = false;
 
   while (true) {
     if (toolRound >= MAX_TOOL_ROUNDS_PER_TURN) {
@@ -179,7 +243,7 @@ export async function runAgentTurn(
     const completion = await openai.chat.completions.create({
       model: SCHEDULING_AGENT_MODEL,
       messages,
-      tools: SCHEDULING_TOOLS,
+      tools,
       temperature: 0.3,
       max_tokens: 800,
     });
@@ -239,15 +303,36 @@ export async function runAgentTurn(
       let result: unknown;
       if (!isKnown) {
         result = { error: `Unknown tool: ${name}` };
+      } else if (
+        session.listingId &&
+        PROPOSAL_TOOL_NAMES.has(name) &&
+        name !== 'submit_listing_brief'
+      ) {
+        result = {
+          error:
+            'Listing-scoped sessions must finalize requirements through submit_listing_brief.',
+        };
+      } else if (proposalError && PROPOSAL_TOOL_NAMES.has(name)) {
+        result = {
+          skipped: true,
+          reason: 'Skipped because an earlier proposal failed in this turn.',
+        };
       } else {
         try {
           result = await runTool(name, parsedArgs, {
             tourId: session.tourId,
             sessionId,
+            focusedListingId: sessionListingId,
           });
         } catch (err) {
           result = { error: (err as Error).message };
         }
+      }
+      if (!proposalError && PROPOSAL_TOOL_NAMES.has(name)) {
+        proposalError = readToolError(result);
+      }
+      if (name === 'submit_listing_brief' && didInitializeTour(result)) {
+        tourInitialized = true;
       }
 
       await appendMessage(sessionId, {
@@ -261,6 +346,24 @@ export async function runAgentTurn(
         tool_call_id: tc.id,
         content: JSON.stringify(result),
       });
+    }
+    if (proposalError) {
+      finalAssistantText = proposalFailureReply(proposalError, userText);
+      await appendMessage(sessionId, {
+        role: 'assistant',
+        content: finalAssistantText,
+      });
+      break;
+    }
+    if (tourInitialized) {
+      finalAssistantText = /[\u3400-\u9fff]/u.test(userText)
+        ? 'Tour scheduling 已建立，这套房源已作为第一个有效房源加入初始排期方案，请确认方案。'
+        : 'Tour scheduling is now established, and this is the first valid listing in the initial proposal. Please review it.';
+      await appendMessage(sessionId, {
+        role: 'assistant',
+        content: finalAssistantText,
+      });
+      break;
     }
     toolRound++;
   }

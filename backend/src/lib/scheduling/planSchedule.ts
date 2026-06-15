@@ -56,17 +56,6 @@ export interface ListingInput {
   district?: string;
   agentName: string;
   availableSlots: TimeWindow[];
-  /**
-   * M4 (PRD §8.6) — when set, the scheduler must NOT recompute this
-   * listing's slot. It will be inserted into the schedule at the given
-   * `lockedSlot.startTime/endTime` and counted toward the block's
-   * capacity, then the rest of the listings fight over what's left.
-   *
-   * Format: locked block must intersect at least one buyer slot — if it
-   * doesn't (e.g. the user changed buyer availability after locking),
-   * we fall back to honoring the lock anyway and surface a warning.
-   */
-  lockedSlot?: TimeWindow;
 }
 
 export interface ScheduleConfig {
@@ -144,45 +133,9 @@ export async function planSchedule(request: ScheduleRequest): Promise<ScheduleRe
     validWindows: TimeWindow[];
   }> = [];
 
-  // ─── Step 0 (M4 §8.6): Honor user-pinned slots ───
-  // Listings carrying lockedSlot were locked by the chat-with-Butler
-  // "Apply" flow. We pre-insert them into `scheduled` and `assignedListings`
-  // before the greedy loop runs, so the algorithm never tries to move
-  // them. They still count against `maxPerBlock` (so other listings
-  // don't pack into a block on top of a pinned one).
-  const lockedPreScheduled: ScheduledViewing[] = [];
-  const lockedAssignedIds = new Set<string>();
-  const inputListings: ListingInput[] = [];
-  for (const l of request.listings) {
-    if (l.lockedSlot) {
-      const lock = l.lockedSlot;
-      const block = getBlock(lock.startTime)?.block || 'other';
-      lockedPreScheduled.push({
-        listingId: l.listingId,
-        address: l.address,
-        agentName: l.agentName,
-        date: lock.date,
-        startTime: lock.startTime,
-        endTime: lock.endTime,
-        block,
-        blockLabel: `${getDayLabel(lock.date)} · ${getBlock(lock.startTime)?.label || block} (locked)`,
-        orderInBlock: 0, // re-numbered at the end
-        // We intentionally skip travel computation for locked viewings —
-        // they were placed by the user, who already accepted whatever
-        // travel cost there was. The post-loop sort + re-number ensures
-        // they slot into the timeline in the right chronological place.
-        cluster: 'locked',
-      });
-      lockedAssignedIds.add(l.listingId);
-    } else {
-      inputListings.push(l);
-    }
-  }
-
   // ─── Step 1: Compute buyer ∩ seller time intersections ───
-  // Skip locked listings — they're already placed.
 
-  for (const listing of inputListings) {
+  for (const listing of request.listings) {
     if (!listing.availableSlots.length) {
       unschedulable.push({
         listingId: listing.listingId,
@@ -212,28 +165,14 @@ export async function planSchedule(request: ScheduleRequest): Promise<ScheduleRe
   }
 
   if (!schedulable.length) {
-    // Even if no listings are flexible, locked ones still get returned.
-    // This is also the path where the user has locked everything and
-    // re-runs scheduling — the result is the lock set, sorted.
-    const lockedSorted = [...lockedPreScheduled].sort((a, b) => {
-      if (a.date !== b.date) return a.date.localeCompare(b.date);
-      return timeToMinutes(a.startTime) - timeToMinutes(b.startTime);
-    });
-    let order = 0;
-    let lastKey = '';
-    for (const v of lockedSorted) {
-      const key = `${v.date}|${v.block}`;
-      if (key !== lastKey) { lastKey = key; order = 1; } else { order++; }
-      v.orderInBlock = order;
-    }
     return {
-      schedule: lockedSorted,
+      schedule: [],
       unschedulable,
       meta: {
         totalListings: request.listings.length,
-        scheduledCount: lockedSorted.length,
+        scheduledCount: 0,
         unschedulableCount: unschedulable.length,
-        totalBlocks: new Set(lockedSorted.map((s) => `${s.date}|${s.block}`)).size,
+        totalBlocks: 0,
         estimatedTotalDuration: '0min',
       },
     };
@@ -342,10 +281,8 @@ export async function planSchedule(request: ScheduleRequest): Promise<ScheduleRe
   });
 
   // Greedy assignment: for each block, prefer clusters with most listings
-  // Pre-seeded with locked viewings so they (a) appear in the result and
-  // (b) count toward `maxPerBlock` capacity below.
-  const scheduled: ScheduledViewing[] = [...lockedPreScheduled];
-  const assignedListings = new Set<string>(lockedAssignedIds);
+  const scheduled: ScheduledViewing[] = [];
+  const assignedListings = new Set<string>();
 
   for (const blockCandidate of sortedBlocks) {
     // Filter out already-assigned listings
@@ -354,11 +291,6 @@ export async function planSchedule(request: ScheduleRequest): Promise<ScheduleRe
     );
     if (!available.length) continue;
     if (scheduled.filter(s => s.date === blockCandidate.date && s.block === blockCandidate.block).length >= maxPerBlock) continue;
-    // Locked viewings already pre-occupying this block — used below as
-    // time obstacles so we don't place a candidate on top of a lock.
-    const lockedInBlock = lockedPreScheduled.filter(
-      (s) => s.date === blockCandidate.date && s.block === blockCandidate.block,
-    );
 
     // Priority 1 & 2: Group by cluster, sort by cluster size (most listings first)
     const clusterGroups = new Map<string, typeof available>();
@@ -449,32 +381,7 @@ export async function planSchedule(request: ScheduleRequest): Promise<ScheduleRe
           earliestStart = timeToMinutes(item.window.startTime);
         }
 
-        let fit = fitViewing(item.window, viewingDuration, earliestStart);
-        if (!fit) continue;
-
-        // M4: avoid overlapping any locked viewing already pinned in
-        // this block. If our fit collides with a locked slot, push
-        // earliestStart past that lock and retry. Keep retrying until
-        // we either find a clean slot or run out of window.
-        let retries = 0;
-        // eslint-disable-next-line no-constant-condition
-        while (lockedInBlock.length > 0 && retries++ < 8) {
-          const fitStart = timeToMinutes(fit.startTime);
-          const fitEnd = timeToMinutes(fit.endTime);
-          const collision = lockedInBlock.find((lk) => {
-            const ls = timeToMinutes(lk.startTime);
-            const le = timeToMinutes(lk.endTime);
-            return fitStart < le && fitEnd > ls;
-          });
-          if (!collision) break;
-          // Push past the locked slot (small fallback buffer for travel
-          // since we don't have travel info between an arbitrary listing
-          // and a locked one).
-          earliestStart = timeToMinutes(collision.endTime) + fallbackBuffer;
-          const retry = fitViewing(item.window, viewingDuration, earliestStart);
-          if (!retry) { fit = null; break; }
-          fit = retry;
-        }
+        const fit = fitViewing(item.window, viewingDuration, earliestStart);
         if (!fit) continue;
 
         // Calculate travel from buyer location for first viewing in block

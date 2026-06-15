@@ -13,6 +13,11 @@
 import { getCurrentUserId, getCurrentJwt, runWithUser } from '../userContext';
 import { supabaseForUser, supabaseAdmin } from '../supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  extractPrimaryPgListingText,
+  normalizePgEvidenceText,
+  textContainsCandidate,
+} from '../propertyGuruText';
 
 /* ─── Domain Types (matching frontend domain.ts) ─── */
 
@@ -76,11 +81,6 @@ export interface Listing {
   lng?: number;
   /** Co-agent reachability. */
   agentReachable?: boolean;
-  /** M4 lock state (PRD §8.6). When 'user_locked', re-runs preserve the
-   *  pinned `lockedSlot` instead of recomputing this listing's time. */
-  lockStatus?: 'user_locked' | null;
-  lockedSlot?: string | null;
-  lockedAt?: string | null;
 }
 
 export interface SellerTimeWindow {
@@ -232,9 +232,6 @@ interface ListingRow {
   lat: number | null;
   lng: number | null;
   agent_reachable: boolean | null;
-  lock_status: string | null;
-  locked_slot: string | null;
-  locked_at: string | null;
 }
 
 interface ConversationRow {
@@ -327,13 +324,10 @@ function rowToListing(r: ListingRow): Listing {
     propertyGuruUrl: r.property_guru_url,
     summary: r.summary,
     attentionReason: r.attention_reason ?? undefined,
-    availability: r.availability ?? [],
+    availability: r.availability ?? undefined,
     lat: r.lat ?? undefined,
     lng: r.lng ?? undefined,
     agentReachable: r.agent_reachable ?? undefined,
-    lockStatus: r.lock_status === 'user_locked' ? 'user_locked' : null,
-    lockedSlot: r.locked_slot ?? null,
-    lockedAt: r.locked_at ?? null,
   };
 }
 
@@ -368,9 +362,6 @@ function listingToRow(l: Listing, tourId: string, userId: string): Omit<ListingR
     lat: l.lat ?? null,
     lng: l.lng ?? null,
     agent_reachable: l.agentReachable ?? null,
-    lock_status: l.lockStatus ?? null,
-    locked_slot: l.lockedSlot ?? null,
-    locked_at: l.lockedAt ?? null,
   };
 }
 
@@ -479,6 +470,36 @@ export async function createPlan(input: Omit<ViewingPlan, 'id'>): Promise<Viewin
   return rowToPlan(data as PlanRow);
 }
 
+export async function updatePlan(planId: string, input: Omit<ViewingPlan, 'id'>): Promise<ViewingPlan | undefined> {
+  if (!isUuid(planId)) return undefined;
+  const { data, error } = await db()
+    .from('plans')
+    .update({
+      title: input.title,
+      client_name: input.clientName,
+      client_whatsapp: input.clientWhatsapp ?? null,
+      brief: input.brief ?? '',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', planId)
+    .select()
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToPlan(data as PlanRow) : undefined;
+}
+
+export async function removePlan(planId: string): Promise<boolean> {
+  if (!isUuid(planId)) return false;
+  const { data, error } = await db()
+    .from('plans')
+    .delete()
+    .eq('id', planId)
+    .select('id')
+    .maybeSingle();
+  if (error) throw error;
+  return Boolean(data);
+}
+
 /* ─── Tours CRUD ─────────────────────────────────────────────────────────── */
 
 export async function listToursByPlan(planId: string): Promise<ViewingTour[]> {
@@ -522,6 +543,37 @@ export async function createTourForPlan(
     .single();
   if (error) throw error;
   return rowToTour(data as TourRow);
+}
+
+export async function updateTour(
+  tourId: string,
+  input: Omit<ViewingTour, 'id' | 'planId'>,
+): Promise<ViewingTour | undefined> {
+  if (!isUuid(tourId)) return undefined;
+  const { data, error } = await db()
+    .from('tours')
+    .update({
+      title: input.title,
+      target_date: input.targetDate,
+      time_window: input.timeWindow,
+      command: input.command ?? '',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', tourId)
+    .select()
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToTour(data as TourRow) : undefined;
+}
+
+export async function removeTour(tourId: string): Promise<boolean> {
+  if (!isUuid(tourId)) return false;
+  const { error, count } = await db()
+    .from('tours')
+    .delete({ count: 'exact' })
+    .eq('id', tourId);
+  if (error) throw error;
+  return (count ?? 0) > 0;
 }
 
 /* ─── Listings CRUD (under Tour) ─────────────────────────────────────────── */
@@ -610,7 +662,10 @@ export async function addListingToTourWeb(tourId: string, listing: Listing): Pro
 export async function updateListingInTour(
   tourId: string,
   listingId: string,
-  updates: Partial<Listing>,
+  updates: Omit<Partial<Listing>, 'attentionReason' | 'suggestedTime'> & {
+    attentionReason?: string | null;
+    suggestedTime?: string | null;
+  },
 ): Promise<Listing | undefined> {
   if (!isUuid(listingId)) return undefined;
   const patch: Record<string, unknown> = {};
@@ -798,7 +853,9 @@ export async function startSchedulingRun(tourId: string): Promise<SchedulingRun>
   const run = rowToSchedulingRun(data as SchedulingRunRow);
 
   // Kick off the real scheduler asynchronously.
-  void runScheduler(run.id, tourId, userId, jwt);
+  void runScheduler(run.id, tourId, userId, jwt).catch((error) => {
+    console.error('[scheduler] background run failed:', error);
+  });
 
   return run;
 }
@@ -848,7 +905,9 @@ export async function retrySchedulingRun(runId: string): Promise<SchedulingRun> 
   const refreshedRun = rowToSchedulingRun(refreshed.data as SchedulingRunRow);
 
   // Resume in background.
-  void runScheduler(runId, row.tour_id, userId, jwt);
+  void runScheduler(runId, row.tour_id, userId, jwt).catch((error) => {
+    console.error('[scheduler] background retry failed:', error);
+  });
 
   return refreshedRun;
 }
@@ -973,22 +1032,19 @@ async function runStep_gather(
   const reachable: Listing[] = [];
   const blocked: Listing[] = [];
   for (const l of listings) {
-    if (l.agentReachable === false) blocked.push(l);
+    if (l.agentReachable === false || !(l.availability || []).length) blocked.push(l);
     else reachable.push(l);
   }
-  const buyerSlots = getBuyerSlotsForTour(tourId);
+  const sellerDates = reachable.flatMap((listing) =>
+    (listing.availability || []).map((slot) => slot.date),
+  );
+  const buyerSlots = await getBuyerSlotsForTour(tourId, sellerDates);
+  if (!buyerSlots.length) {
+    throw new Error(
+      'Buyer availability is missing or invalid. Edit the Tour and confirm a concrete date/time before scheduling.',
+    );
+  }
   const useOneMap = await probeOneMap();
-
-  // M4: parse "HH:MM – HH:MM" (en-dash) into a TimeWindow on the tour's
-  // primary date. Used to feed locked listings into the scheduler so
-  // they keep their pinned slot across re-runs.
-  const tourDate = buyerSlots[0]?.date ?? new Date().toISOString().slice(0, 10);
-  const parseLockedSlot = (slot: string | null | undefined) => {
-    if (!slot) return undefined;
-    const m = /(\d{1,2}:\d{2})\s*[–\-to]+\s*(\d{1,2}:\d{2})/.exec(slot);
-    if (!m) return undefined;
-    return { date: tourDate, startTime: m[1], endTime: m[2] };
-  };
 
   const scheduleRequest: ScheduleRequest = {
     buyerSlots: buyerSlots.map((w) => ({ ...w })),
@@ -999,10 +1055,6 @@ async function runStep_gather(
       lng: l.lng,
       agentName: l.coAgent?.name || 'Unknown',
       availableSlots: (l.availability || []).map((w) => ({ ...w })),
-      lockedSlot:
-        l.lockStatus === 'user_locked'
-          ? parseLockedSlot(l.lockedSlot)
-          : undefined,
     })),
     config: { useOneMap, viewingDurationMinutes: 30, bufferMinutes: 15 },
   };
@@ -1169,27 +1221,6 @@ async function runStep_persist(
       await ensureAttentionItem(c, tourId, userId, l.id, l.attentionReason || 'Co-agent unreachable');
       continue;
     }
-    // M4: locked listings carry a user-pinned slot in lock columns; the
-    // scheduler echoes them in `schedule[]`. We must NOT touch
-    // suggested_time (it's already the canonical slot the user picked)
-    // or the lock columns. But we DO need to make sure status is
-    // 'confirmed' — earlier steps may have left it on 'contacting' /
-    // 'imported' and we don't want the listing card to render as a
-    // pending state when it's actually locked.
-    if (l.lockStatus === 'user_locked') {
-      if (l.status !== 'confirmed' || l.statusLabel !== 'Confirmed') {
-        await c
-          .from('listings')
-          .update({
-            status: 'confirmed',
-            status_label: 'Confirmed',
-            attention_reason: null,
-          })
-          .eq('id', l.id);
-      }
-      scheduledCount++;
-      continue;
-    }
     const sched = scheduledById.get(l.id);
     if (sched) {
       await c
@@ -1197,7 +1228,7 @@ async function runStep_persist(
         .update({
           status: 'confirmed',
           status_label: 'Confirmed',
-          suggested_time: `${sched.startTime} – ${sched.endTime}`,
+          suggested_time: `${sched.date} ${sched.startTime} – ${sched.endTime}`,
           attention_reason: null,
         })
         .eq('id', l.id);
@@ -1310,15 +1341,16 @@ export async function generateRoute(tourId: string): Promise<AgentRoute> {
   const tour = await getTourDetail(tourId);
   const listings = await listListingsByTour(tourId);
 
-  const startMin = (s: string | undefined): number => {
-    if (!s) return Number.POSITIVE_INFINITY;
-    const m = /(\d{1,2}):(\d{2})/.exec(s);
-    if (!m) return Number.POSITIVE_INFINITY;
-    return Number(m[1]) * 60 + Number(m[2]);
+  const slotKey = (s: string | undefined): string => {
+    if (!s) return '\uffff';
+    const dated = /^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})/.exec(s);
+    if (dated) return `${dated[1]} ${dated[2].padStart(5, '0')}`;
+    const time = /(\d{1,2}):(\d{2})/.exec(s);
+    return time ? `${tour?.targetDate || '9999-12-31'} ${time[1].padStart(2, '0')}:${time[2]}` : '\uffff';
   };
   const confirmedListings = listings
     .filter((l) => l.status === 'confirmed')
-    .sort((a, b) => startMin(a.suggestedTime) - startMin(b.suggestedTime));
+    .sort((a, b) => slotKey(a.suggestedTime).localeCompare(slotKey(b.suggestedTime)));
 
   const stops: RouteStop[] = confirmedListings.map((listing) => ({
     id: `stop-${listing.id}`,
@@ -1346,7 +1378,10 @@ export async function generateRoute(tourId: string): Promise<AgentRoute> {
       tour_id: tourId,
       user_id: userId,
       title: tour?.title || 'Viewing Route',
-      date: tour?.targetDate || 'Today',
+      date: [...new Set(confirmedListings.map((listing) => {
+        const match = /^(\d{4}-\d{2}-\d{2})\s+/.exec(listing.suggestedTime || '');
+        return match?.[1] || tour?.targetDate;
+      }).filter(Boolean))].join(', ') || 'Today',
       stops,
     })
     .select()
@@ -1445,12 +1480,33 @@ export function pgToBusinessListing(
   const imageUrl = pickStr('imageUrl', 'image', 'thumbnail');
   const propertyGuruUrlVal = pickStr('propertyGuruUrl', 'url') || fallbackUrl;
   const rawText = pickStr('rawText');
+  const sourceTitle = pickStr('title');
+  const detail = (pg as { detail?: { description?: unknown } }).detail;
+  const detailDescription =
+    typeof detail?.description === 'string' ? detail.description.trim() : '';
+  const primaryListingText = [
+    sourceTitle,
+    extractPrimaryPgListingText(rawText),
+    detailDescription,
+  ].filter(Boolean).join('\n');
 
   const llm = (pg as { _llm?: Partial<{ condo: string; address: string; area: string; coAgentName: string; coAgentAgency: string }> })._llm;
-  const fallback = parsePgRawText(rawText, rawAddress);
-
-  const condo = (llm?.condo && llm.condo.trim()) || fallback.condo;
+  const fallback = parsePgRawText(extractPrimaryPgListingText(rawText), rawAddress);
   const address = (llm?.address && llm.address.trim()) || fallback.cleanAddress || rawAddress;
+
+  const groundedProjectName = (
+    value: string | undefined,
+    evidence: string,
+  ): string => {
+    const candidate = value?.trim() || '';
+    if (!candidate) return '';
+    if (normalizePgEvidenceText(candidate) === normalizePgEvidenceText(address)) return '';
+    return textContainsCandidate(evidence, candidate) ? candidate : '';
+  };
+
+  const condo =
+    groundedProjectName(llm?.condo, primaryListingText) ||
+    groundedProjectName(fallback.condo, sourceTitle);
   const area = (llm?.area && llm.area.trim()) || fallback.area || deriveAreaFromAddress(address);
   const coAgentName =
     (llm?.coAgentName && llm.coAgentName.trim()) || fallback.agentName || pickStr('title') || 'Unknown';

@@ -72,7 +72,7 @@ function StepIcon({ status }: { status: SchedulingStepStatus }) {
 }
 
 export function SchedulingProgress({ run, steps, onRetry, canRetry = true }: Props) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(true)
   if (!run) return null
 
   // Defensive: if backend is older / step_state is missing, fall back to
@@ -89,19 +89,19 @@ export function SchedulingProgress({ run, steps, onRetry, canRetry = true }: Pro
   const failedStepLabel = steps.find((s) => s.key === failedStepKey)?.label
 
   // Header text
-  let headline = 'Butler is working…'
-  let sub = 'Starting up…'
+  let headline = 'Butler 正在排期…'
+  let sub = '正在启动任务…'
   if (run.status === 'completed') {
-    headline = 'Schedule ready'
+    headline = '排期完成'
     const r = run.result
     sub = r
-      ? `${r.scheduledCount} scheduled · ${r.attentionCount} need attention`
-      : 'All steps complete.'
+      ? `${r.scheduledCount} 个已安排 · ${r.attentionCount} 个需处理`
+      : '所有步骤已完成。'
   } else if (run.status === 'failed') {
-    headline = 'Scheduling stopped'
+    headline = '排期已停止'
     sub = failedStepLabel
-      ? `Couldn't finish "${failedStepLabel.toLowerCase()}".`
-      : 'Something went wrong.'
+      ? `未能完成“${failedStepLabel}”。`
+      : '出现异常。'
   } else if (currentStep) {
     sub = `${currentStep.label}…`
   }
@@ -192,9 +192,9 @@ export function SchedulingProgress({ run, steps, onRetry, canRetry = true }: Pro
               <button
                 type="button"
                 onClick={onRetry}
-                className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[#222222] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#000000]"
+                className="inline-flex cursor-pointer items-center gap-2 rounded-[6px] bg-[#222222] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#000000]"
               >
-                Retry from failed step
+                从失败步骤重试
               </button>
             </div>
           )}

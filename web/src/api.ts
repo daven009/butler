@@ -59,7 +59,16 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     console.error(`[api] ✗ ${method} ${url} body:`, err)
     throw new Error(err?.error?.message || `API Error ${res.status}`)
   }
-  const json = await res.json()
+  if (res.status === 204) {
+    console.log(`[api] ✓ ${method} ${url} no content`)
+    return undefined as T
+  }
+  const text = await res.text()
+  if (!text) {
+    console.log(`[api] ✓ ${method} ${url} empty body`)
+    return undefined as T
+  }
+  const json = JSON.parse(text)
   console.log(`[api] ✓ ${method} ${url} json keys:`, Object.keys(json || {}))
   return json
 }
@@ -79,11 +88,63 @@ export async function createPlan(input: Omit<ViewingPlan, 'id'>): Promise<Viewin
   return data.plan
 }
 
+export async function updatePlan(planId: string, input: Omit<ViewingPlan, 'id'>): Promise<ViewingPlan> {
+  const data = await apiFetch<{ plan: ViewingPlan }>(`/plans/${planId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+  return data.plan
+}
+
+export async function deletePlan(planId: string): Promise<void> {
+  await apiFetch(`/plans/${planId}`, { method: 'DELETE' })
+}
+
 /* ─── Tours ─── */
 
 export async function fetchToursByPlan(planId: string): Promise<ViewingTour[]> {
   const data = await apiFetch<{ tours: ViewingTour[] }>(`/plans/${planId}/tours`)
   return data.tours
+}
+
+export type AvailabilityRule =
+  | {
+      type: 'date'
+      date: string
+      startTime: string
+      endTime: string
+    }
+  | {
+      type: 'weekly'
+      weekdays: number[]
+      startTime: string
+      endTime: string
+    }
+
+export interface AvailabilityParseResult {
+  status: 'valid' | 'needs_clarification' | 'invalid'
+  rules: AvailabilityRule[]
+  summary: string
+  message: string
+  serialized?: string
+  targetDate?: string
+}
+
+export interface AvailabilityConversationMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export async function parseAvailability(
+  text: string,
+  referenceDate: string,
+  messages: AvailabilityConversationMessage[] = [],
+): Promise<AvailabilityParseResult> {
+  const data = await apiFetch<{ result: AvailabilityParseResult }>('/availability/parse', {
+    method: 'POST',
+    body: JSON.stringify({ text, referenceDate, timezone: 'Asia/Singapore', messages }),
+  })
+  return data.result
 }
 
 export async function createTour(
@@ -95,6 +156,21 @@ export async function createTour(
     body: JSON.stringify(input),
   })
   return data.tour
+}
+
+export async function updateTour(
+  tourId: string,
+  input: Omit<ViewingTour, 'id' | 'planId'>,
+): Promise<ViewingTour> {
+  const data = await apiFetch<{ tour: ViewingTour }>(`/tours/${tourId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+  return data.tour
+}
+
+export async function deleteTour(tourId: string): Promise<void> {
+  await apiFetch(`/tours/${tourId}`, { method: 'DELETE' })
 }
 
 /* ─── Listings ─── */
@@ -118,10 +194,14 @@ export interface SeedResult {
   buyerSlots: Array<{ date: string; startTime: string; endTime: string }>
 }
 
-export async function seedTourConversations(tourId: string, agentName?: string): Promise<SeedResult> {
+export async function seedTourConversations(
+  tourId: string,
+  agentName?: string,
+  options: { force?: boolean } = {},
+): Promise<SeedResult> {
   return apiFetch<SeedResult>(`/tours/${tourId}/conversations/seed`, {
     method: 'POST',
-    body: JSON.stringify({ agentName }),
+    body: JSON.stringify({ agentName, force: options.force === true }),
   })
 }
 
@@ -191,6 +271,7 @@ export async function fetchSchedulingSteps(): Promise<SchedulingStepDef[]> {
 export interface SchedulingSession {
   id: string
   tourId: string
+  listingId?: string
   userId: string
   runId?: string
   status: 'open' | 'finalized' | 'archived'
@@ -198,6 +279,27 @@ export interface SchedulingSession {
   promptTokens: number
   completionTokens: number
   totalTurns: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ListingSchedulingBrief {
+  id: string
+  tourId: string
+  listingId: string
+  sessionId: string
+  status: 'clarifying' | 'ready'
+  priority: 'low' | 'normal' | 'high'
+  constraints: Array<{
+    type: string
+    scope?: 'listing' | 'tour'
+    listing_id?: string
+    value?: string
+    end_value?: string
+  }>
+  flexibility: Record<string, unknown>
+  summary?: string
+  version: number
   createdAt: string
   updatedAt: string
 }
@@ -224,9 +326,12 @@ export type ProposalChangeAction = 'reschedule' | 'swap' | 'drop' | 'add'
 
 export interface ProposalChange {
   listingId: string
+  listingLabel?: string
   action: ProposalChangeAction
   from: string | null
   to: string | null
+  resultStatus?: 'imported' | 'confirmed' | 'needs-attention'
+  reason?: string | null
 }
 
 export interface ScheduleChangeProposal {
@@ -242,16 +347,21 @@ export interface ScheduleChangeProposal {
   createdAt: string
 }
 
-/** Open or fetch the existing open session for this tour. */
+/** Open the listing-scoped Butler session for one listing. */
 export async function openSchedulingSession(
   tourId: string,
   runId?: string,
+  listingId?: string,
 ): Promise<SchedulingSession> {
+  if (!listingId) throw new Error('listingId is required for a scheduling session')
   const data = await apiFetch<{ session: SchedulingSession }>(
     `/tours/${tourId}/scheduling-sessions`,
     {
       method: 'POST',
-      body: JSON.stringify({ runId: runId ?? null }),
+      body: JSON.stringify({
+        runId: runId ?? null,
+        listingId: listingId ?? null,
+      }),
     },
   )
   return data.session
@@ -263,6 +373,16 @@ export async function fetchSessionMessages(
   return apiFetch(`/scheduling-sessions/${sessionId}/messages`)
 }
 
+export async function fetchListingSchedulingBrief(
+  tourId: string,
+  listingId: string,
+): Promise<ListingSchedulingBrief | null> {
+  const data = await apiFetch<{ brief: ListingSchedulingBrief | null }>(
+    `/tours/${tourId}/listings/${listingId}/scheduling-brief`,
+  )
+  return data.brief
+}
+
 /**
  * Send a user message; the backend runs one full agent turn (1–4s typical)
  * and returns the updated history. We ignore `assistant` field — caller can
@@ -271,10 +391,11 @@ export async function fetchSessionMessages(
 export async function sendSchedulingMessage(
   sessionId: string,
   text: string,
+  context?: { listingId?: string },
 ): Promise<{ session: SchedulingSession; messages: SessionMessage[]; assistant: SessionMessage }> {
   return apiFetch(`/scheduling-sessions/${sessionId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, context }),
   })
 }
 
@@ -300,38 +421,6 @@ export async function discardProposal(proposalId: string): Promise<void> {
   await apiFetch(`/scheduling-proposals/${proposalId}/discard`, {
     method: 'POST',
     body: JSON.stringify({}),
-  })
-}
-
-/** M4 — drop the user-lock on a listing so the next scheduling re-run
- *  can move it again. */
-export async function unlockListing(listingId: string): Promise<void> {
-  await apiFetch(`/listings/${listingId}/unlock`, {
-    method: 'POST',
-    body: JSON.stringify({}),
-  })
-}
-
-/* ─── User preferences (Settings → AI rules) ─── */
-
-export interface UserPreferences {
-  /** null means "use default". */
-  butlerPersona: string | null
-  /** Server-known default persona — shown as placeholder in the editor. */
-  defaultButlerPersona: string
-  updatedAt: string | null
-}
-
-export async function fetchMyPreferences(): Promise<UserPreferences> {
-  return apiFetch<UserPreferences>('/me/preferences')
-}
-
-export async function saveMyPreferences(
-  butlerPersona: string | null,
-): Promise<UserPreferences> {
-  return apiFetch<UserPreferences>('/me/preferences', {
-    method: 'PUT',
-    body: JSON.stringify({ butlerPersona }),
   })
 }
 

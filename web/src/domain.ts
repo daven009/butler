@@ -38,6 +38,12 @@ export interface CoAgent {
   agency: string
 }
 
+export interface SellerTimeWindow {
+  date: string
+  startTime: string
+  endTime: string
+}
+
 export interface Listing {
   id: string
   title: string
@@ -59,9 +65,7 @@ export interface Listing {
   propertyGuruUrl: string
   summary: string
   attentionReason?: string
-  /** M4 lock state — when 'user_locked', re-runs preserve the slot. */
-  lockStatus?: 'user_locked' | null
-  lockedSlot?: string | null
+  availability?: SellerTimeWindow[]
 }
 
 export interface ConversationMessage {
@@ -140,4 +144,3 @@ export function toClientRoute(route: AgentRoute): ClientRoute {
     })),
   }
 }
-

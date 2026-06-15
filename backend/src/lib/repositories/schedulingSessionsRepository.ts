@@ -22,6 +22,7 @@ function db(): SupabaseClient {
 export interface SchedulingSession {
   id: string;
   tourId: string;
+  listingId?: string;
   userId: string;
   runId?: string;
   status: 'open' | 'finalized' | 'archived';
@@ -29,6 +30,28 @@ export interface SchedulingSession {
   promptTokens: number;
   completionTokens: number;
   totalTurns: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListingSchedulingBrief {
+  id: string;
+  tourId: string;
+  listingId: string;
+  userId: string;
+  sessionId: string;
+  status: 'clarifying' | 'ready';
+  priority: 'low' | 'normal' | 'high';
+  constraints: Array<{
+    type: string;
+    scope?: 'listing' | 'tour';
+    listing_id?: string;
+    value?: string;
+    end_value?: string;
+  }>;
+  flexibility: Record<string, unknown>;
+  summary?: string;
+  version: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -57,11 +80,15 @@ export type ProposalChangeAction = 'reschedule' | 'swap' | 'drop' | 'add';
 
 export interface ProposalChange {
   listingId: string;
+  listingLabel?: string;
   action: ProposalChangeAction;
   /** Pre-change state, e.g. "14:00 – 14:30" */
   from: string | null;
   /** Post-change state */
   to: string | null;
+  /** Final listing state when a full re-plan makes a listing unschedulable. */
+  resultStatus?: 'imported' | 'confirmed' | 'needs-attention';
+  reason?: string | null;
 }
 
 export interface ScheduleChangeProposal {
@@ -82,6 +109,7 @@ export interface ScheduleChangeProposal {
 interface SessionRow {
   id: string;
   tour_id: string;
+  listing_id: string | null;
   user_id: string;
   run_id: string | null;
   status: 'open' | 'finalized' | 'archived';
@@ -120,10 +148,27 @@ interface ProposalRow {
   created_at: string;
 }
 
+interface BriefRow {
+  id: string;
+  tour_id: string;
+  listing_id: string;
+  user_id: string;
+  session_id: string;
+  status: 'clarifying' | 'ready';
+  priority: 'low' | 'normal' | 'high';
+  constraints: ListingSchedulingBrief['constraints'];
+  flexibility: Record<string, unknown>;
+  summary: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 function rowToSession(r: SessionRow): SchedulingSession {
   return {
     id: r.id,
     tourId: r.tour_id,
+    listingId: r.listing_id ?? undefined,
     userId: r.user_id,
     runId: r.run_id ?? undefined,
     status: r.status,
@@ -131,6 +176,24 @@ function rowToSession(r: SessionRow): SchedulingSession {
     promptTokens: r.prompt_tokens,
     completionTokens: r.completion_tokens,
     totalTurns: r.total_turns,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function rowToBrief(r: BriefRow): ListingSchedulingBrief {
+  return {
+    id: r.id,
+    tourId: r.tour_id,
+    listingId: r.listing_id,
+    userId: r.user_id,
+    sessionId: r.session_id,
+    status: r.status,
+    priority: r.priority,
+    constraints: r.constraints ?? [],
+    flexibility: r.flexibility ?? {},
+    summary: r.summary ?? undefined,
+    version: r.version,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -168,24 +231,27 @@ function rowToProposal(r: ProposalRow): ScheduleChangeProposal {
 // ─── Sessions ───────────────────────────────────────────────────────────
 
 /**
- * Get-or-create the open session for a tour. We allow at most one open
- * session per (tour, user) at a time. The `runId` records which run
- * spawned the conversation — useful for debugging when the user complains
- * the agent is referring to stale schedule state.
+ * Get-or-create an open session. Listing conversations are unique per
+ * (tour, listing, user); listingId=null is the legacy/global Tour thread.
  */
 export async function getOrOpenSession(
   tourId: string,
   runId?: string,
+  listingId?: string,
 ): Promise<SchedulingSession> {
   const userId = getCurrentUserId();
   const c = db();
 
-  const { data: existing, error: findErr } = await c
+  let existingQuery = c
     .from('scheduling_sessions')
     .select('*')
     .eq('tour_id', tourId)
     .eq('user_id', userId)
-    .eq('status', 'open')
+    .eq('status', 'open');
+  existingQuery = listingId
+    ? existingQuery.eq('listing_id', listingId)
+    : existingQuery.is('listing_id', null);
+  const { data: existing, error: findErr } = await existingQuery
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -196,6 +262,7 @@ export async function getOrOpenSession(
     .from('scheduling_sessions')
     .insert({
       tour_id: tourId,
+      listing_id: listingId ?? null,
       user_id: userId,
       run_id: runId ?? null,
       status: 'open',
@@ -204,6 +271,76 @@ export async function getOrOpenSession(
     .single();
   if (error) throw error;
   return rowToSession(data as SessionRow);
+}
+
+export async function upsertListingBrief(input: {
+  tourId: string;
+  listingId: string;
+  sessionId: string;
+  status: 'clarifying' | 'ready';
+  priority?: 'low' | 'normal' | 'high';
+  constraints: ListingSchedulingBrief['constraints'];
+  flexibility?: Record<string, unknown>;
+  summary?: string;
+}): Promise<ListingSchedulingBrief> {
+  const userId = getCurrentUserId();
+  const c = db();
+  const { data: existing, error: readError } = await c
+    .from('listing_scheduling_briefs')
+    .select('version')
+    .eq('tour_id', input.tourId)
+    .eq('listing_id', input.listingId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (readError) throw readError;
+  const { data, error } = await c
+    .from('listing_scheduling_briefs')
+    .upsert(
+      {
+        tour_id: input.tourId,
+        listing_id: input.listingId,
+        user_id: userId,
+        session_id: input.sessionId,
+        status: input.status,
+        priority: input.priority ?? 'normal',
+        constraints: input.constraints,
+        flexibility: input.flexibility ?? {},
+        summary: input.summary ?? null,
+        version: ((existing as { version?: number } | null)?.version ?? 0) + 1,
+      },
+      { onConflict: 'tour_id,listing_id,user_id' },
+    )
+    .select()
+    .single();
+  if (error) throw error;
+  return rowToBrief(data as BriefRow);
+}
+
+export async function getListingBrief(
+  tourId: string,
+  listingId: string,
+): Promise<ListingSchedulingBrief | undefined> {
+  const { data, error } = await db()
+    .from('listing_scheduling_briefs')
+    .select('*')
+    .eq('tour_id', tourId)
+    .eq('listing_id', listingId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToBrief(data as BriefRow) : undefined;
+}
+
+export async function listReadyListingBriefs(
+  tourId: string,
+): Promise<ListingSchedulingBrief[]> {
+  const { data, error } = await db()
+    .from('listing_scheduling_briefs')
+    .select('*')
+    .eq('tour_id', tourId)
+    .eq('status', 'ready')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data as BriefRow[]).map(rowToBrief);
 }
 
 export async function getSession(sessionId: string): Promise<SchedulingSession | undefined> {
