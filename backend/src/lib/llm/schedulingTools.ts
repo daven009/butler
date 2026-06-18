@@ -17,7 +17,6 @@ import {
   upsertListingBrief,
 } from '../repositories/schedulingSessionsRepository';
 import {
-  type Listing,
   listListingsByTour,
   getTourDetail,
 } from '../repositories/plansRepository';
@@ -32,6 +31,11 @@ import {
   type ProposeSwapArgs,
 } from '../scheduling/proposalsService';
 import type { SchedulingToolName } from './schedulingToolDefs';
+import {
+  findListingByReference,
+  listingNumberById,
+  sortListingsForScheduleView,
+} from './listingIndex';
 
 interface SubmitListingBriefArgs {
   priority?: 'low' | 'normal' | 'high';
@@ -40,41 +44,30 @@ interface SubmitListingBriefArgs {
   flexibility?: Record<string, unknown>;
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────
-
-function findListingByIdOrTitle(listings: Listing[], needle: string): Listing | undefined {
-  // Exact id first (common case — the LLM gets ids from get_schedule).
-  const byId = listings.find((l) => l.id === needle);
-  if (byId) return byId;
-  // Fuzzy fallback — sometimes the agent invents an id-shaped string for
-  // a listing it knows by name.
-  const lc = needle.toLowerCase();
-  return listings.find(
-    (l) => l.title.toLowerCase().includes(lc) || l.condo.toLowerCase().includes(lc),
-  );
-}
-
 // ─── Read tools ─────────────────────────────────────────────────────────
 
 async function tool_get_schedule(_args: Record<string, unknown>, tourId: string) {
   const tour = await getTourDetail(tourId);
   const listings = await listListingsByTour(tourId);
+  const numbered = listingNumberById(listings);
   return {
     tourTitle: tour?.title,
     targetDate: tour?.targetDate,
     totalListings: listings.length,
-    scheduled: listings
+    scheduled: sortListingsForScheduleView(listings)
       .filter((l) => l.status === 'confirmed' && l.suggestedTime)
       .map((l) => ({
+        ref: `#${numbered.get(l.id)}`,
         listingId: l.id,
         title: l.title,
         area: l.area,
         time: l.suggestedTime,
         agentName: l.coAgent.name,
       })),
-    unscheduled: listings
+    unscheduled: sortListingsForScheduleView(listings)
       .filter((l) => l.status === 'needs-attention' || l.status === 'imported')
       .map((l) => ({
+        ref: `#${numbered.get(l.id)}`,
         listingId: l.id,
         title: l.title,
         area: l.area,
@@ -85,9 +78,10 @@ async function tool_get_schedule(_args: Record<string, unknown>, tourId: string)
 
 async function tool_get_listing_detail(args: { listing_id: string }, tourId: string) {
   const listings = await listListingsByTour(tourId);
-  const l = findListingByIdOrTitle(listings, args.listing_id);
+  const l = findListingByReference(listings, args.listing_id);
   if (!l) return { error: `Listing "${args.listing_id}" not found in this tour.` };
   return {
+    ref: `#${listingNumberById(listings).get(l.id)}`,
     listingId: l.id,
     title: l.title,
     address: l.address,
@@ -109,7 +103,7 @@ async function tool_get_listing_detail(args: { listing_id: string }, tourId: str
 
 async function tool_get_unscheduled_reason(args: { listing_id: string }, tourId: string) {
   const listings = await listListingsByTour(tourId);
-  const l = findListingByIdOrTitle(listings, args.listing_id);
+  const l = findListingByReference(listings, args.listing_id);
   if (!l) return { error: `Listing "${args.listing_id}" not found.` };
   if (l.status === 'confirmed') {
     return {
@@ -148,7 +142,7 @@ async function tool_get_travel_time(args: { from: string; to: string }, tourId: 
   const listings = await listListingsByTour(tourId);
   const resolve = (token: string) => {
     if (token === 'buyer') return null; // buyer geo not persisted yet
-    const l = findListingByIdOrTitle(listings, token);
+    const l = findListingByReference(listings, token);
     if (!l || !l.lat || !l.lng) return null;
     return { lat: l.lat, lng: l.lng, label: l.title };
   };

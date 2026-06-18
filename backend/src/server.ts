@@ -23,6 +23,7 @@ import {
   createTourForPlan,
   generateRoute,
   getConversationsByListing,
+  getLatestSchedulingRunForTour,
   getPlanById,
   getRouteByShareToken,
   getSchedulingRun,
@@ -36,6 +37,7 @@ import {
   removePlan,
   removeTour,
   shareRoute,
+  startSchedulingRun,
   retrySchedulingRun,
   updatePlan,
   updateTour,
@@ -623,12 +625,37 @@ app.post('/api/tours/:tourId/conversations/seed', async (req, res) => {
 });
 
 app.post('/api/tours/:tourId/scheduling-runs', async (req, res) => {
-  return sendError(
-    res,
-    409,
-    'LISTING_BRIEF_REQUIRED',
-    'Tour-level scheduling is retired. Finalize a listing scheduling brief to generate or update the Tour proposal.',
-  );
+  try {
+    const tour = await getTourDetail(req.params.tourId);
+    if (!tour) return notFound(res, 'TOUR_NOT_FOUND', 'Tour not found');
+    if (!isValidTourAvailability(tour.targetDate, tour.timeWindow)) {
+      return sendError(
+        res,
+        409,
+        'BUYER_AVAILABILITY_REQUIRED',
+        'Buyer availability is missing or invalid. Edit the Tour before scheduling.',
+      );
+    }
+
+    const existing = await getLatestSchedulingRunForTour(req.params.tourId);
+    if (existing) {
+      await markAvailabilityMismatches(req.params.tourId);
+      return res.status(200).json({ run: existing, reused: true });
+    }
+
+    await seedTourConversations(req.params.tourId);
+    await markAvailabilityMismatches(req.params.tourId);
+    const run = await startSchedulingRun(req.params.tourId);
+    return res.status(202).json({ run, reused: false });
+  } catch (error) {
+    console.error('[scheduler] start failed:', error);
+    return sendError(
+      res,
+      500,
+      'SCHEDULING_START_FAILED',
+      errorMessage(error, 'Scheduling start failed'),
+    );
+  }
 });
 
 app.get('/api/scheduling-runs/:runId', async (req, res) => {
@@ -669,7 +696,7 @@ app.get('/api/scheduling-steps', (_req, res) => {
 
 /* ─── Scheduling chat sessions (Phase 2B / §8.6.3) ──────────────────────── */
 
-/** Open or fetch the isolated Listing Engine thread for one listing. */
+/** Open or fetch either the global Tour thread or an isolated listing thread. */
 app.post('/api/tours/:tourId/scheduling-sessions', async (req, res) => {
   try {
     const tour = await getTourDetail(req.params.tourId);
@@ -677,17 +704,11 @@ app.post('/api/tours/:tourId/scheduling-sessions', async (req, res) => {
     const runId = typeof req.body?.runId === 'string' ? req.body.runId : undefined;
     const listingId =
       typeof req.body?.listingId === 'string' ? req.body.listingId : undefined;
-    if (!listingId) {
-      return sendError(
-        res,
-        400,
-        'LISTING_ID_REQUIRED',
-        'Scheduling sessions are listing-scoped; listingId is required.',
-      );
-    }
-    const listings = await listListingsByTour(req.params.tourId);
-    if (!listings.some((listing) => listing.id === listingId)) {
-      return notFound(res, 'LISTING_NOT_FOUND', 'Listing not found in this tour');
+    if (listingId) {
+      const listings = await listListingsByTour(req.params.tourId);
+      if (!listings.some((listing) => listing.id === listingId)) {
+        return notFound(res, 'LISTING_NOT_FOUND', 'Listing not found in this tour');
+      }
     }
     const session = await getOrOpenSession(req.params.tourId, runId, listingId);
     return res.status(200).json({ session });
@@ -735,14 +756,6 @@ app.post('/api/scheduling-sessions/:sessionId/messages', async (req, res) => {
   }
   const session = await getSession(req.params.sessionId);
   if (!session) return notFound(res, 'SESSION_NOT_FOUND', 'Session not found');
-  if (!session.listingId) {
-    return sendError(
-      res,
-      409,
-      'LISTING_SESSION_REQUIRED',
-      'Global Tour conversations are read-only. Continue from a listing scheduling session.',
-    );
-  }
   if (
     session.listingId &&
     focusedListingId &&
@@ -760,7 +773,7 @@ app.post('/api/scheduling-sessions/:sessionId/messages', async (req, res) => {
     const assistantMsg = await runAgentTurn(
       req.params.sessionId,
       text,
-      session.listingId ?? focusedListingId,
+      session.listingId,
     );
     const messages = await listMessagesForSession(req.params.sessionId);
     const refreshedSession = await getSession(req.params.sessionId);

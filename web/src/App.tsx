@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Bath,
   BedDouble,
@@ -68,7 +68,6 @@ type TimelineSlot = {
   time: string
 }
 
-type RouteStage = "needs-listings" | "needs-review" | "ready" | "running" | "done" | "attention"
 type ContentMode = "listings" | "ai"
 type AppRoute =
   | { view: "workspace"; planId?: string; tourId?: string }
@@ -139,6 +138,46 @@ const schedulingTone: Record<ListingStatus, string> = {
   "not-fitting": "border-[#dddddd] bg-white text-[#6a6a6a]",
 }
 
+function isPendingTime(value?: string | null) {
+  return !value || value.toLowerCase() === "pending"
+}
+
+function isNoMatchingSlot(listing: Listing) {
+  const label = listing.statusLabel.toLowerCase()
+  return listing.status === "needs-attention" && (label === "no matching slot" || listing.statusLabel === "无法排期")
+}
+
+function localizedStatusLabel(listing: Listing) {
+  const label = listing.statusLabel.toLowerCase()
+  if (listing.status === "confirmed" || label === "confirmed") return "已确认"
+  if (isNoMatchingSlot(listing)) return "无法排期"
+  if (label === "imported") return "待加入 AI"
+  if (label === "removed from tour") return "已移出线路"
+  if (listing.status === "contacting") return "正在协调"
+  if (listing.status === "needs-attention") return listing.statusLabel || "需要处理"
+  return listing.statusLabel || schedulingLabel[listing.status]
+}
+
+function localizedSuggestedTime(value?: string | null, fallback = "待定"): string {
+  return isPendingTime(value) ? fallback : value ?? fallback
+}
+
+function sortListingsForScheduleView(listings: Listing[]) {
+  return listings
+    .map((listing, index) => ({ listing, index }))
+    .sort((a, b) => {
+      const aScheduled = a.listing.status === "confirmed" && !isPendingTime(a.listing.suggestedTime)
+      const bScheduled = b.listing.status === "confirmed" && !isPendingTime(b.listing.suggestedTime)
+      if (aScheduled && bScheduled) {
+        const byTime = (a.listing.suggestedTime ?? "").localeCompare(b.listing.suggestedTime ?? "")
+        if (byTime !== 0) return byTime
+      }
+      if (aScheduled !== bScheduled) return aScheduled ? -1 : 1
+      return a.index - b.index
+    })
+    .map(({ listing }) => listing)
+}
+
 const navItems: Array<{ id: View; label: string; icon: typeof Home }> = [
   { id: "workspace", label: t("clientPlans"), icon: Home },
   { id: "settings", label: t("settings"), icon: Settings },
@@ -151,58 +190,6 @@ const defaultTour: ViewingTour = {
   targetDate: new Date().toISOString().slice(0, 10),
   timeWindow: "",
   command: "",
-}
-
-function getRouteStage(listings: Listing[], schedulingRunning: boolean, schedulingRun: api.SchedulingRun | null): RouteStage {
-  if (schedulingRunning || schedulingRun?.status === "running") return "running"
-  if (schedulingRun?.status === "completed" || listings.some((listing) => listing.status === "confirmed")) {
-    return listings.some((listing) => listing.status === "needs-attention") ? "attention" : "done"
-  }
-  if (listings.length === 0) return "needs-listings"
-  if (listings.some((listing) => !listing.coAgent.phone || listing.status === "needs-attention")) return "needs-review"
-  return "ready"
-}
-
-function getRouteStageCopy(stage: RouteStage) {
-  const map: Record<RouteStage, { label: string; title: string; description: string; cta: string }> = {
-    "needs-listings": {
-      label: "需要导入房源",
-      title: "先从 PropertyGuru 添加房源",
-      description: "这条线路还没有房源。通过 Chrome 插件导入房源后，Butler 才能读取对方中介信息并开始排期。",
-      cta: "从 PropertyGuru 导入",
-    },
-    "needs-review": {
-      label: "需要检查",
-      title: "有房源资料需要补齐",
-      description: "部分房源缺少对方中介电话或存在异常。先处理缺失信息，可以提升 AI 排期成功率。",
-      cta: "检查房源",
-    },
-    ready: {
-      label: "可以排期",
-      title: "这条线路已准备好交给 AI",
-      description: "Butler 会模拟联系对方中介，收集可看房时间，解决冲突，并自动生成看房路线。",
-      cta: "开始 AI 排期",
-    },
-    running: {
-      label: "AI 正在工作",
-      title: "Butler 正在为这条线路排期",
-      description: "你可以在右侧看到当前步骤和最近活动。当前为内部模拟，不会真实发送 WhatsApp。",
-      cta: "查看 AI 工作",
-    },
-    done: {
-      label: "路线已生成",
-      title: "AI 排期完成",
-      description: "已安排的房源会进入看房路线。你可以查看路线，或继续让 Butler 调整时间。",
-      cta: "查看看房路线",
-    },
-    attention: {
-      label: "需要处理",
-      title: "AI 已完成，但有异常需要你决定",
-      description: "部分房源无法自动安排。请查看原因，选择跳过、手动安排或让 AI 重新尝试。",
-      cta: "处理异常",
-    },
-  }
-  return map[stage]
 }
 
 function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: ButlerUser | null }) {
@@ -236,6 +223,7 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
   /** Chat session id, set after a successful scheduling run completes. */
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   const [aiFocusedListingId, setAiFocusedListingId] = useState<string | null>(null)
+  const schedulingInitializationRef = useRef<Promise<void> | null>(null)
   const [, setTimelineSlots] = useState<TimelineSlot[]>([])
   const [routeHydrating, setRouteHydrating] = useState(
     () => initialRoute.view === "workspace" && Boolean(initialRoute.planId),
@@ -244,7 +232,6 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
   const activePlan = workspacePlans.find((plan) => plan.id === selectedPlanId) ?? null
   const activeTour = workspaceTours.find((tour) => tour.id === activeTourId) ?? workspaceTours[0] ?? null
   const selectedListing = listingItems.find((listing) => listing.id === selectedListingId) ?? null
-  const routeStage = getRouteStage(listingItems, schedulingRunning, schedulingRun)
   const groupedListings = useMemo(() => {
     // Group by area, then sort:
     //   - within each area: ascending by suggestedTime start (so the agent
@@ -309,6 +296,64 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
   const setActiveTourListings = (tourId: string, listings: Listing[]) => {
     setListingItems(listings)
     setTourListingCounts((current) => ({ ...current, [tourId]: listings.length }))
+  }
+
+  const initializeTourScheduling = (): Promise<void> => {
+    if (!activeTour || !listingItems.length) return Promise.resolve()
+    if (listingItems.some((listing) => listing.status === "confirmed" && listing.suggestedTime)) {
+      setSchedulingStarted(true)
+      return Promise.resolve()
+    }
+    if (schedulingInitializationRef.current) return schedulingInitializationRef.current
+
+    const task = (async () => {
+      setSchedulingStarted(true)
+      setSchedulingRunning(true)
+      try {
+        let run = await api.startSchedulingRun(activeTour.id)
+        setSchedulingRun(run)
+        while (run.status === "running") {
+          await new Promise((resolve) => window.setTimeout(resolve, 750))
+          run = await api.getSchedulingRun(run.id)
+          setSchedulingRun(run)
+        }
+        if (run.status === "failed") {
+          throw new Error("首次全局排期失败，请查看排期步骤后重试。")
+        }
+
+        const fresh = await api.fetchListings(activeTour.id)
+        setActiveTourListings(activeTour.id, fresh)
+        const slots: TimelineSlot[] = fresh
+          .filter((listing) => listing.status === "confirmed" && listing.suggestedTime)
+          .map((listing) => {
+            const parsed = parseScheduledSlot(listing.suggestedTime!, activeTour.targetDate)
+            return {
+              listingId: listing.id,
+              condoName: listing.condo,
+              date: parsed.date,
+              time: parsed.time,
+            }
+          })
+        setTimelineSlots(slots)
+      } finally {
+        setSchedulingRunning(false)
+      }
+    })()
+
+    schedulingInitializationRef.current = task
+    void task.then(
+      () => {
+        if (schedulingInitializationRef.current === task) {
+          schedulingInitializationRef.current = null
+        }
+      },
+      () => {
+        if (schedulingInitializationRef.current === task) {
+          schedulingInitializationRef.current = null
+        }
+      },
+    )
+    return task
   }
 
   useEffect(() => {
@@ -776,7 +821,6 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
             schedulingRunning={schedulingRunning}
             schedulingRun={schedulingRun}
             schedulingSteps={schedulingSteps}
-            routeStage={routeStage}
             chatSessionId={chatSessionId}
             aiFocusedListingId={aiFocusedListingId}
             onClosePanel={() => setSidePanel(null)}
@@ -803,6 +847,7 @@ function App({ onSignOut, currentUser }: { onSignOut: () => void; currentUser: B
                 console.warn('[chat] refresh after apply failed:', e)
               }
             }}
+            onInitializeScheduling={initializeTourScheduling}
             onImportListings={async (imported, importedId) => {
               setListingItems(imported)
               if (activeTour) {
@@ -1207,7 +1252,6 @@ function PlanWorkspace({
   schedulingRunning,
   schedulingRun,
   schedulingSteps,
-  routeStage,
   chatSessionId,
   aiFocusedListingId,
   onClosePanel,
@@ -1221,6 +1265,7 @@ function PlanWorkspace({
   onSelectTour,
   onDeleteTour,
   onImportListings,
+  onInitializeScheduling,
   onProposalApplied,
 }: {
   activeTour: ViewingTour
@@ -1234,7 +1279,6 @@ function PlanWorkspace({
   schedulingRunning: boolean
   schedulingRun: api.SchedulingRun | null
   schedulingSteps: api.SchedulingStepDef[]
-  routeStage: RouteStage
   chatSessionId: string | null
   aiFocusedListingId: string | null
   onClosePanel: () => void
@@ -1248,6 +1292,7 @@ function PlanWorkspace({
   onSelectTour: (tourId: string) => void
   onDeleteTour: (tourId: string) => void
   onImportListings: (listings: Listing[], importedId?: string) => Promise<void>
+  onInitializeScheduling: () => Promise<void>
   onProposalApplied: () => void
 }) {
   // Area · Status filter (purely client-side; resets when underlying listings change)
@@ -1281,7 +1326,6 @@ function PlanWorkspace({
   }, [groupedListings, areaFilter, statusFilter])
 
   const filterCount = areaFilter.length + statusFilter.length
-  const stageCopy = getRouteStageCopy(routeStage)
   const showContextPanel = contentMode === "listings" && sidePanel
   const toggleArea = (a: string) =>
     setAreaFilter((prev) => (prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a]))
@@ -1445,11 +1489,10 @@ function PlanWorkspace({
             <AIAssistantWorkspace
               tourId={activeTour.id}
               listings={workspaceListings}
-              routeStage={routeStage}
-              stageCopy={stageCopy}
               schedulingStarted={schedulingStarted}
               schedulingRunning={schedulingRunning}
               focusedListingId={aiFocusedListingId}
+              onInitializeScheduling={onInitializeScheduling}
               onProposalApplied={onProposalApplied}
             />
           )}
@@ -1608,160 +1651,58 @@ function PlanSidebar({
 function AIAssistantWorkspace({
   tourId,
   listings,
-  routeStage,
-  stageCopy,
   schedulingStarted,
   schedulingRunning,
   focusedListingId,
+  onInitializeScheduling,
   onProposalApplied,
 }: {
   tourId: string
   listings: Listing[]
-  routeStage: RouteStage
-  stageCopy: ReturnType<typeof getRouteStageCopy>
   schedulingStarted: boolean
   schedulingRunning: boolean
   focusedListingId: string | null
+  onInitializeScheduling: () => Promise<void>
   onProposalApplied: () => void
 }) {
   const [selectedListingId, setSelectedListingId] = useState<string | null>(
     focusedListingId ?? listings[0]?.id ?? null,
   )
-  const [scheduleDraft, setScheduleDraft] = useState("")
-  const [listingSessionIds, setListingSessionIds] = useState<Record<string, string>>({})
-  const [submittingConstraint, setSubmittingConstraint] = useState(false)
-  const [constraintError, setConstraintError] = useState<string | null>(null)
-  const [submittedConstraintListingIds, setSubmittedConstraintListingIds] = useState<Set<string>>(
-    () => new Set(),
-  )
+  const [globalSessionId, setGlobalSessionId] = useState<string | null>(null)
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null)
+  const initializationRequestedRef = useRef(false)
   const selectedListing = listings.find((listing) => listing.id === selectedListingId) ?? listings[0] ?? null
-  const selectedListingSessionId = selectedListing
-    ? listingSessionIds[selectedListing.id] ?? null
-    : null
   const started = listings.length > 0
-  const hasConfirmedSchedule =
-    selectedListing?.status === "confirmed" && Boolean(selectedListing.suggestedTime)
-  const hasAvailabilityMismatch =
-    selectedListing?.status === "needs-attention" && selectedListing.statusLabel === "无法排期"
-  const pendingConstraintListingId =
-    selectedListing && !hasConfirmedSchedule && !hasAvailabilityMismatch && !schedulingRunning
-      ? selectedListing.id
-      : null
-  const needsSingleListingBrief =
-    started &&
-    Boolean(selectedListing) &&
-    !hasConfirmedSchedule &&
-    !hasAvailabilityMismatch &&
-    !schedulingRunning
-  const constraintSubmitted =
-    Boolean(selectedListing) && submittedConstraintListingIds.has(selectedListing.id)
-
-  const submitTakeoverDecision = async (draft: string) => {
-    if (!selectedListing || !draft.trim()) return
-    setSubmittingConstraint(true)
-    setConstraintError(null)
-    try {
-      let sessionId = listingSessionIds[selectedListing.id]
-      if (!sessionId) {
-        const session = await api.openSchedulingSession(
-          tourId,
-          undefined,
-          selectedListing.id,
-        )
-        sessionId = session.id
-      }
-      await api.sendSchedulingMessage(
-        sessionId,
-        draft.trim(),
-        { listingId: selectedListing.id },
-      )
-      setListingSessionIds((current) => ({
-        ...current,
-        [selectedListing.id]: sessionId,
-      }))
-    } catch (error) {
-      setConstraintError(error instanceof Error ? error.message : "提交下一步决断失败")
-    } finally {
-      setSubmittingConstraint(false)
-    }
-  }
-
-  const submitListingConstraint = async (draft: string) => {
-    if (!selectedListing || !draft.trim()) return
-    setSubmittingConstraint(true)
-    setConstraintError(null)
-    try {
-      let sessionId = listingSessionIds[selectedListing.id]
-      if (!sessionId) {
-        const session = await api.openSchedulingSession(
-          tourId,
-          undefined,
-          selectedListing.id,
-        )
-        sessionId = session.id
-        setListingSessionIds((current) => ({
-          ...current,
-          [selectedListing.id]: session.id,
-        }))
-      }
-      await api.sendSchedulingMessage(
-        sessionId,
-        draft.trim(),
-        { listingId: selectedListing.id },
-      )
-      setSubmittedConstraintListingIds((current) => {
-        const next = new Set(current)
-        next.add(selectedListing.id)
-        return next
-      })
-      setScheduleDraft("")
-    } catch (error) {
-      setConstraintError(error instanceof Error ? error.message : "提交排期偏好失败")
-    } finally {
-      setSubmittingConstraint(false)
-    }
-  }
+  const hasAvailabilityMismatch = selectedListing ? isNoMatchingSlot(selectedListing) : false
 
   useEffect(() => {
-    if (focusedListingId && listings.some((listing) => listing.id === focusedListingId)) {
-      setSelectedListingId(focusedListingId)
-    }
-  }, [focusedListingId, listings])
-
-  useEffect(() => {
-    if (!selectedListing || !started) return
     let cancelled = false
-    api.openSchedulingSession(tourId, undefined, selectedListing.id)
-      .then(async (session) => {
-        const [brief, history] = await Promise.all([
-          api.fetchListingSchedulingBrief(tourId, selectedListing.id),
-          api.fetchSessionMessages(session.id),
-        ])
-        return { session, brief, history }
-      })
-      .then(({ session, brief, history }) => {
+    api.openSchedulingSession(tourId)
+      .then((session) => {
         if (cancelled) return
-        setListingSessionIds((current) => ({
-          ...current,
-          [selectedListing.id]: session.id,
-        }))
-        if (brief?.status === "ready" || history.messages.length > 0) {
-          setSubmittedConstraintListingIds((current) => {
-            const next = new Set(current)
-            next.add(selectedListing.id)
-            return next
-          })
-        }
+        setGlobalSessionId(session.id)
       })
       .catch((error) => {
         if (!cancelled) {
-          console.warn("[scheduling] could not load listing session:", error)
+          setWorkspaceError(error instanceof Error ? error.message : "无法打开全局 AI 会话")
         }
       })
     return () => {
       cancelled = true
     }
-  }, [selectedListing, started, tourId])
+  }, [tourId])
+
+  useEffect(() => {
+    const hasEstablishedSchedule = listings.some(
+      (listing) => listing.status === "confirmed" && Boolean(listing.suggestedTime),
+    )
+    if (!started || hasEstablishedSchedule || initializationRequestedRef.current) return
+    initializationRequestedRef.current = true
+    setWorkspaceError(null)
+    void onInitializeScheduling().catch((error) => {
+      setWorkspaceError(error instanceof Error ? error.message : "首次全局排期失败")
+    })
+  }, [listings, onInitializeScheduling, started])
 
   return (
     <div className="mt-5 grid min-h-0 flex-1 gap-3 overflow-hidden xl:grid-cols-[280px_minmax(0,1.25fr)_minmax(280px,0.8fr)]">
@@ -1770,85 +1711,50 @@ function AIAssistantWorkspace({
         selectedListingId={selectedListing?.id ?? null}
         schedulingStarted={schedulingStarted}
         selectable={started}
-        pendingConstraintListingId={pendingConstraintListingId}
+        pendingConstraintListingId={null}
         onSelectListing={setSelectedListingId}
       />
 
       <>
-          {hasAvailabilityMismatch ? (
-            <UnschedulableListingPanel
-              key={selectedListing?.id}
-              tourId={tourId}
-              listing={selectedListing}
-            />
-          ) : hasConfirmedSchedule ? (
-            <CoAgentConversationPanel tourId={tourId} listing={selectedListing} />
-          ) : needsSingleListingBrief && !constraintSubmitted ? (
-            <AIPromptComposer
-              draft={scheduleDraft}
-              setDraft={setScheduleDraft}
-              listings={selectedListing ? [selectedListing] : []}
-              routeStage={routeStage}
-              stageCopy={stageCopy}
-              canStart={Boolean(selectedListing) && !submittingConstraint}
-              title={`告诉 AI 如何安排 ${selectedListing?.condo || selectedListing?.title || "这套房源"}`}
-              description="输入这套新房源的时间、顺序和路线限制。Butler 会理解你的要求，并提出对整条 tour 的调整方案。"
-              submitLabel={submittingConstraint ? "正在分析…" : "提交排期偏好"}
-              error={constraintError}
-              onSubmit={submitListingConstraint}
-            />
-          ) : (
-            <div className="min-h-0 overflow-hidden rounded-[6px] border border-[#eeeeee] bg-white shadow-sm">
-              {selectedListingSessionId && selectedListing ? (
+        {hasAvailabilityMismatch ? (
+          <UnschedulableListingPanel
+            key={selectedListing?.id}
+            tourId={tourId}
+            listing={selectedListing}
+          />
+        ) : (
+          <CoAgentConversationPanel tourId={tourId} listing={selectedListing} />
+        )}
+
+        <div className="min-h-0 overflow-hidden rounded-[6px] border border-[#eeeeee] bg-white shadow-sm">
+          {globalSessionId ? (
+            <div className="flex h-full min-h-0 flex-col">
+              {workspaceError && (
+                <div className="border-b border-[#ffd5de] bg-[#fff5f7] px-4 py-2 text-xs font-semibold text-[#c13515]">
+                  {workspaceError}
+                </div>
+              )}
+              <div className="min-h-0 flex-1">
                 <SchedulingChat
-                  sessionId={selectedListingSessionId}
-                  focusedListingId={selectedListing.id}
-                  focusedListingName={selectedListing.condo || selectedListing.title}
-                  focusedListingAvailability={selectedListing.availability}
+                  sessionId={globalSessionId}
                   onProposalApplied={onProposalApplied}
                 />
-              ) : (
-                <ListingAIActivityPanel
-                  listing={selectedListing}
-                  schedulingRunning={schedulingRunning}
-                  needsBrief={needsSingleListingBrief}
-                />
+              </div>
+            </div>
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center p-6 text-center">
+              <Bot className="size-7 text-[#ff385c]" />
+              <p className="mt-3 text-sm font-bold text-[#222222]">
+                {schedulingRunning ? "正在建立全局排期…" : "正在打开全局 AI 会话…"}
+              </p>
+              {workspaceError && (
+                <p className="mt-2 text-xs font-semibold leading-5 text-[#c13515]">
+                  {workspaceError}
+                </p>
               )}
             </div>
           )}
-          <div className="min-h-0 overflow-hidden rounded-[6px] border border-[#eeeeee] bg-white shadow-sm">
-            {hasAvailabilityMismatch && selectedListingSessionId && selectedListing ? (
-              <SchedulingChat
-                sessionId={selectedListingSessionId}
-                focusedListingId={selectedListing.id}
-                focusedListingName={selectedListing.condo || selectedListing.title}
-                focusedListingAvailability={selectedListing.availability}
-                onProposalApplied={onProposalApplied}
-              />
-            ) : hasAvailabilityMismatch ? (
-              <ListingAIActivityPanel
-                listing={selectedListing}
-                schedulingRunning={false}
-                decisionSending={submittingConstraint}
-                decisionError={constraintError}
-                onDecision={submitTakeoverDecision}
-              />
-            ) : hasConfirmedSchedule && selectedListingSessionId && selectedListing ? (
-              <SchedulingChat
-                sessionId={selectedListingSessionId}
-                focusedListingId={selectedListing.id}
-                focusedListingName={selectedListing.condo || selectedListing.title}
-                focusedListingAvailability={selectedListing.availability}
-                onProposalApplied={onProposalApplied}
-              />
-            ) : (
-              <ListingAIActivityPanel
-                listing={selectedListing}
-                schedulingRunning={schedulingRunning}
-                needsBrief={needsSingleListingBrief}
-              />
-            )}
-          </div>
+        </div>
       </>
     </div>
   )
@@ -1869,6 +1775,8 @@ function ListingActivityRail({
   pendingConstraintListingId: string | null
   onSelectListing: (id: string) => void
 }) {
+  const sortedListings = useMemo(() => sortListingsForScheduleView(listings), [listings])
+
   return (
     <aside className="min-h-0 overflow-y-auto rounded-[6px] border border-[#eeeeee] bg-white p-3 shadow-sm">
       <div className="flex items-center justify-between gap-3">
@@ -1886,10 +1794,11 @@ function ListingActivityRail({
             先在房源列表里导入 PropertyGuru listing，AI 才能开始协调。
           </div>
         )}
-        {listings.map((listing) => (
+        {sortedListings.map((listing, index) => (
           <ListingActivityCard
             key={listing.id}
             listing={listing}
+            displayNumber={index + 1}
             selected={selectable && listing.id === selectedListingId}
             schedulingStarted={schedulingStarted}
             selectable={selectable}
@@ -1904,6 +1813,7 @@ function ListingActivityRail({
 
 function ListingActivityCard({
   listing,
+  displayNumber,
   selected,
   schedulingStarted,
   selectable,
@@ -1911,6 +1821,7 @@ function ListingActivityCard({
   onSelect,
 }: {
   listing: Listing
+  displayNumber: number
   selected: boolean
   schedulingStarted: boolean
   selectable: boolean
@@ -1924,9 +1835,13 @@ function ListingActivityCard({
       : !hasContact
       ? { label: "缺少联系方式", detail: "需要补充对方中介电话", tone: "bg-[#fff5f7] text-[#c13515]" }
       : listing.status === "confirmed"
-        ? { label: "已确认", detail: listing.suggestedTime ? `建议 ${listing.suggestedTime} 看房` : "对方中介已确认时间", tone: "bg-[#f3fbf5] text-[#177245]" }
+        ? {
+            label: "已确认",
+            detail: !isPendingTime(listing.suggestedTime) ? `建议 ${listing.suggestedTime} 看房` : "对方中介已确认时间",
+            tone: "bg-[#f3fbf5] text-[#177245]",
+          }
         : listing.status === "needs-attention"
-          ? { label: listing.statusLabel || "需要处理", detail: listing.attentionReason ?? "需要人工处理", tone: "bg-[#fff5f7] text-[#c13515]" }
+          ? { label: localizedStatusLabel(listing), detail: listing.attentionReason ?? "需要人工处理", tone: "bg-[#fff5f7] text-[#c13515]" }
           : schedulingStarted && listing.status === "imported"
             ? { label: "待加入 AI", detail: `为 ${listing.coAgent.name || "对方中介"} 补充排期要求`, tone: "bg-[#f2f2f2] text-[#717171]" }
           : schedulingStarted || listing.status === "contacting"
@@ -1947,109 +1862,21 @@ function ListingActivityCard({
       }`}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
+        <div className="flex min-w-0 items-start gap-2">
+          <span className={`mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${selected ? "bg-white/10 text-white" : "bg-[#f2f2f2] text-[#6a6a6a]"}`}>
+            #{displayNumber}
+          </span>
+          <div className="min-w-0">
           <p className="truncate text-sm font-bold">{listing.condo}</p>
           <p className={`mt-0.5 truncate text-xs font-semibold ${selected ? "text-white/65" : "text-[#717171]"}`}>{listing.area}</p>
+          </div>
         </div>
         <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${status.tone}`}>{status.label}</span>
       </div>
       <p className={`mt-2 truncate text-xs font-semibold ${selected ? "text-white/70" : "text-[#9ca3af]"}`}>
-        {listing.suggestedTime ?? status.detail}
+        {localizedSuggestedTime(listing.suggestedTime, status.detail)}
       </p>
     </button>
-  )
-}
-
-const schedulePromptChips = [
-  "尽量把同一区域的房源排在一起",
-  "优先安排已经确认可看的房源",
-  "午饭时间 12:30-13:30 不安排看房",
-  "如果对方中介时间冲突，先保留高优先级房源",
-]
-
-function AIPromptComposer({
-  draft,
-  setDraft,
-  listings,
-  routeStage,
-  stageCopy,
-  canStart,
-  title = "告诉 AI 这次排期要怎么做",
-  description,
-  submitLabel = "开始 AI 排期",
-  error,
-  onSubmit,
-}: {
-  draft: string
-  setDraft: (value: string) => void
-  listings: Listing[]
-  routeStage: RouteStage
-  stageCopy: ReturnType<typeof getRouteStageCopy>
-  canStart: boolean
-  title?: string
-  description?: string
-  submitLabel?: string
-  error?: string | null
-  onSubmit: (draft: string) => void | Promise<void>
-}) {
-  return (
-    <section className="min-h-0 overflow-hidden rounded-[6px] border border-[#eeeeee] bg-white shadow-sm">
-      <div className="flex h-full min-h-0 flex-col p-5">
-        <div className="flex items-start gap-3">
-          <span className="grid size-11 shrink-0 place-items-center rounded-[6px] bg-[#fff5f7] text-[#ff385c]">
-            <Bot className="size-5" />
-          </span>
-          <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#ff385c]">AI Schedule Brief</p>
-            <h2 className="mt-1 text-2xl font-bold tracking-[-0.3px]">{title}</h2>
-            <p className="mt-2 text-sm leading-6 text-[#6a6a6a]">{description ?? stageCopy.description}</p>
-          </div>
-        </div>
-
-        <div className="mt-5 grid gap-2 sm:grid-cols-3">
-          <AICheckRow ok={listings.length > 0} label={`${listings.length} 个房源`} />
-          <AICheckRow ok={listings.some((listing) => listing.coAgent.phone)} label="中介联系方式" />
-          <AICheckRow ok={routeStage !== "needs-listings"} label="可启动模拟排期" />
-        </div>
-
-        <div className="mt-5 flex flex-wrap gap-2">
-          {schedulePromptChips.map((chip) => (
-            <button
-              key={chip}
-              type="button"
-              onClick={() => setDraft(draft ? `${draft}\n${chip}` : chip)}
-              className="rounded-full border border-[#dddddd] bg-[#fafafa] px-3 py-1.5 text-xs font-bold text-[#555555] transition-colors hover:border-[#222222] hover:bg-white"
-            >
-              + {chip}
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-4 min-h-0 flex-1">
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder="例如：这次客户下午 2 点后才有空，尽量从 Marina Bay 开始，Amber Park 如果时间冲突可以放到最后。"
-            className="h-full min-h-[220px] w-full resize-none rounded-[6px] border border-[#dddddd] bg-[#fafafa] p-4 text-sm font-medium leading-6 text-[#222222] outline-none transition-colors focus:border-[#222222] focus:bg-white"
-          />
-        </div>
-
-        <div className="mt-4 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold text-[#717171]">Butler 会用自然语言理解偏好，并生成可确认的调整方案。</p>
-            {error && <p className="mt-1 text-xs font-semibold text-[#c13515]">{error}</p>}
-          </div>
-          <button
-            type="button"
-            onClick={() => void onSubmit(draft)}
-            disabled={!canStart || !draft.trim()}
-            className="inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-[6px] bg-[#ff385c] px-6 py-3 text-sm font-bold text-white shadow-[0_10px_24px_rgba(255,56,92,0.24)] transition-colors hover:bg-[#e00b41] disabled:cursor-not-allowed disabled:bg-[#dddddd] disabled:text-[#717171] disabled:shadow-none focus:outline-none focus-visible:ring-2 focus-visible:ring-[#222222] focus-visible:ring-offset-2"
-          >
-            {submitLabel} <Send className="size-4" />
-          </button>
-        </div>
-      </div>
-    </section>
   )
 }
 
@@ -2194,156 +2021,6 @@ function CoAgentMessageBubble({ side, text, muted }: { side: "ai" | "agent"; tex
   )
 }
 
-function getListingScheduleBullets(
-  listing: Listing | null,
-  needsBrief: boolean,
-  schedulingRunning: boolean,
-): Array<{ text: string; done?: boolean; active?: boolean }> {
-  if (!listing) {
-    return [{ text: "选择一个房源后显示它的安排动态。", active: true }]
-  }
-
-  if (needsBrief) {
-    return [
-      { text: `${listing.condo} 是排期开始后新增的房源。`, done: true },
-      { text: "等待你补充这个房源的 AI Schedule Brief。", active: true },
-      { text: "开始后 AI 会尽量保留已确认安排，只处理这个新房源的协调和插入。" },
-    ]
-  }
-
-  if (listing.status === "confirmed") {
-    return [
-      { text: `已读取 ${listing.condo} 的 listing 信息和对方中介资料。`, done: true },
-      { text: `确认对方中介 ${listing.coAgent.name || "对方中介"} 有可联系号码。`, done: true },
-      { text: listing.suggestedTime ? `对方确认可看时间：${listing.suggestedTime}。` : "对方已确认可看时间。", done: true },
-      { text: "AI 判断该时间不会破坏当前路线顺序，已写入看房安排。", done: true },
-    ]
-  }
-
-  if (listing.status === "needs-attention" && listing.statusLabel === "无法排期") {
-    return [
-      { text: `已读取 ${listing.condo || listing.title} 的卖家中介可用时间。`, done: true },
-      { text: "已与当前 Tour 的买家可看时间逐段比较。", done: true },
-      { text: listing.attentionReason ?? "买家与卖家中介的时间没有至少 30 分钟重叠。", active: true },
-      { text: "请修改买家可看时间，或联系卖家中介取得其他时段。" },
-    ]
-  }
-
-  if (listing.status === "needs-attention") {
-    return [
-      { text: `已读取 ${listing.condo} 的 listing 信息和对方中介资料。`, done: true },
-      { text: "AI 已尝试匹配客户时间窗、房源可约时间和路线顺序。", done: true },
-      { text: listing.attentionReason ?? "出现时间冲突或信息不足，无法自动确认。", active: true },
-      { text: "需要你决定：跳过、手动安排，或让 AI 用新的约束重新尝试。" },
-    ]
-  }
-
-  if (schedulingRunning || listing.status === "contacting") {
-    return [
-      { text: `正在读取 ${listing.condo} 的 listing 信息和对方中介资料。`, done: true },
-      { text: `正在模拟联系 ${listing.coAgent.name || "对方中介"} 确认可看时间。`, active: true },
-      { text: "下一步会判断它是否能插入当前路线，并避免影响已确认房源。" },
-    ]
-  }
-
-  return [
-    { text: `已导入 ${listing.condo}，等待 AI 开始排期。`, done: true },
-    { text: listing.coAgent.phone ? `已读取对方中介联系方式：${listing.coAgent.name || "对方中介"}。` : "缺少对方中介联系方式，需要补充后才能协调。", done: Boolean(listing.coAgent.phone), active: !listing.coAgent.phone },
-    { text: "开始排期后，AI 会匹配客户可看时间、房源可约时间和路线顺序。" },
-  ]
-}
-
-function ListingAIActivityPanel({
-  listing,
-  schedulingRunning,
-  needsBrief = false,
-  decisionSending = false,
-  decisionError,
-  onDecision,
-}: {
-  listing: Listing | null
-  schedulingRunning: boolean
-  needsBrief?: boolean
-  decisionSending?: boolean
-  decisionError?: string | null
-  onDecision?: (draft: string) => Promise<void>
-}) {
-  const bullets = getListingScheduleBullets(listing, needsBrief, schedulingRunning)
-  const [decisionDraft, setDecisionDraft] = useState("")
-
-  const submitDecision = async () => {
-    const text = decisionDraft.trim()
-    if (!text || !onDecision || decisionSending) return
-    await onDecision(text)
-  }
-
-  return (
-    <section className="flex h-full min-h-0 flex-col">
-      <div className="border-b border-[#eeeeee] px-4 py-3">
-        <h2 className="text-sm font-bold">AI 动态 / 我的协作</h2>
-        <p className="mt-1 text-xs font-semibold text-[#717171]">{listing?.condo ?? "当前房源"}</p>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#717171]">安排步骤</p>
-          <ul className="mt-4 space-y-4">
-            {bullets.map((item) => (
-              <li key={item.text} className="flex gap-3 text-sm leading-6">
-                <span className={`mt-2 size-2 shrink-0 rounded-full ${item.active ? "bg-[#ff385c]" : item.done ? "bg-[#177245]" : "bg-[#d9d9d9]"}`} />
-                <span className={item.active ? "font-semibold text-[#222222]" : "font-medium text-[#6a6a6a]"}>{item.text}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-      {onDecision ? (
-        <div className="border-t border-[#eeeeee] p-3">
-          <p className="mb-2 text-xs font-semibold text-[#717171]">
-            告诉 Butler 下一步怎么处理，例如调整买家时间、继续询问卖家，或暂时跳过这套房源。
-          </p>
-          <div className="flex items-end gap-2">
-            <textarea
-              value={decisionDraft}
-              onChange={(event) => setDecisionDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault()
-                  void submitDecision()
-                }
-              }}
-              rows={2}
-              placeholder="输入你的下一步决断..."
-              className="min-h-10 min-w-0 flex-1 resize-none rounded-[6px] border border-[#dddddd] px-3 py-2 text-sm leading-5 outline-none focus:border-[#222222]"
-            />
-            <button
-              type="button"
-              onClick={() => void submitDecision()}
-              disabled={!decisionDraft.trim() || decisionSending}
-              className="grid size-10 shrink-0 place-items-center rounded-[6px] bg-[#222222] text-white disabled:cursor-not-allowed disabled:bg-[#dddddd]"
-              aria-label="提交下一步决断"
-            >
-              <Send className="size-4" />
-            </button>
-          </div>
-          {decisionError && <p className="mt-2 text-xs font-semibold text-[#c13515]">{decisionError}</p>}
-        </div>
-      ) : listing?.status !== "needs-attention" && (
-        <div className="border-t border-[#eeeeee] p-3">
-          <div className="flex gap-2">
-            <input
-              placeholder="问 AI：这个房源为什么这样安排？"
-              className="min-w-0 flex-1 rounded-[6px] border border-[#dddddd] px-3 py-2 text-sm outline-none focus:border-[#222222]"
-            />
-            <button className="grid size-10 shrink-0 place-items-center rounded-[6px] bg-[#222222] text-white">
-              <Send className="size-4" />
-            </button>
-          </div>
-        </div>
-      )}
-    </section>
-  )
-}
-
 function UnschedulableListingPanel({
   tourId,
   listing,
@@ -2434,17 +2111,6 @@ function UnschedulableListingPanel({
         </div>
       )}
     </section>
-  )
-}
-
-function AICheckRow({ ok, label }: { ok: boolean; label: string }) {
-  return (
-    <div className="flex items-center gap-2 rounded-[6px] border border-[#eeeeee] bg-white px-3 py-2 text-sm font-semibold text-[#555555]">
-      <span className={`grid size-6 place-items-center rounded-full ${ok ? "bg-[#f3fbf5] text-[#177245]" : "bg-[#fff5f7] text-[#c13515]"}`}>
-        {ok ? <CheckCircle2 className="size-4" /> : <CircleAlert className="size-4" />}
-      </span>
-      {label}
-    </div>
   )
 }
 
@@ -2797,7 +2463,7 @@ export function ViewingTimeline({ slots, listings }: { slots: TimelineSlot[]; li
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <p className={`text-xs font-bold tracking-[-0.1px] ${isConfirmed ? "text-[#ff385c]" : "text-[#b0b0b0]"}`}>
-                          {isConfirmed ? slot.time : "Pending"}
+                          {isConfirmed ? slot.time : "待定"}
                         </p>
                         <p className="mt-0.5 truncate text-sm font-semibold text-[#222222]">{slot.condoName}</p>
                       </div>
@@ -2986,96 +2652,6 @@ function ActivityLine({ text, active }: { text: string; active?: boolean }) {
   )
 }
 
-function AIWorkPanel({
-  run,
-  steps,
-  listings,
-  onClose,
-}: {
-  run: api.SchedulingRun | null
-  steps: api.SchedulingStepDef[]
-  listings: Listing[]
-  onClose: () => void
-}) {
-  const currentStep = steps.find((step) => step.key === run?.currentStep)
-  const progress = Math.max(0, Math.min(100, run?.progress ?? 3))
-  const fallbackSteps = steps.length ? steps : [
-    { key: "prepare", label: "整理线路要求" },
-    { key: "contacts", label: "检查中介联系方式" },
-    { key: "coordinate", label: "模拟联系对方中介" },
-    { key: "optimize", label: "解决时间冲突并生成路线" },
-  ]
-  const statusMap = run?.stepState ?? {}
-  const sampleListings = listings.slice(0, 3)
-
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <PanelHeader title="AI 工作中" description="当前为内部模拟，不会真实发送 WhatsApp。" icon={Bot} onClose={onClose} />
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        <div className="rounded-[6px] border border-[#ffd5de] bg-[#fff5f7] p-4">
-          <p className="text-xs font-bold uppercase tracking-[0.08em] text-[#c13515]">当前步骤</p>
-          <h2 className="mt-2 text-xl font-bold">{currentStep?.label ?? "启动 AI 排期任务"}</h2>
-          <p className="mt-2 text-sm leading-6 text-[#6a6a6a]">
-            Butler 正在读取线路、房源和模拟沟通结果，完成后会自动生成看房路线。
-          </p>
-          <div className="mt-4 h-2 overflow-hidden rounded-full bg-white">
-            <div className="h-full rounded-full bg-[#ff385c] transition-[width] duration-300" style={{ width: `${progress}%` }} />
-          </div>
-          <p className="mt-2 text-xs font-semibold text-[#717171]">{progress}%</p>
-        </div>
-
-        <div className="mt-4 rounded-[6px] border border-[#eeeeee] bg-white p-4">
-          <p className="text-sm font-bold">工作步骤</p>
-          <div className="mt-3 space-y-3">
-            {fallbackSteps.map((step) => {
-              const state = statusMap[step.key] ?? (step.key === run?.currentStep ? "running" : "pending")
-              return (
-                <div key={step.key} className="flex items-center gap-3">
-                  <span className={`grid size-6 place-items-center rounded-full ${
-                    state === "done"
-                      ? "bg-[#f3fbf5] text-[#177245]"
-                      : state === "running"
-                        ? "bg-[#fff5f7] text-[#ff385c]"
-                        : state === "failed"
-                          ? "bg-[#ff385c] text-white"
-                          : "bg-[#f2f2f2] text-[#9ca3af]"
-                  }`}>
-                    {state === "running" ? <span className="size-2 animate-pulse rounded-full bg-current" /> : <CheckCircle2 className="size-3.5" />}
-                  </span>
-                  <span className="text-sm font-semibold text-[#222222]">{step.label}</span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-[6px] border border-[#eeeeee] bg-white p-4">
-          <p className="text-sm font-bold">最近活动</p>
-          <div className="mt-3 space-y-3">
-            <ActivityLine text={`已读取 ${listings.length} 个房源，准备协调可看房时间。`} />
-            {sampleListings.map((listing) => (
-              <ActivityLine
-                key={listing.id}
-                text={`检查 ${listing.condo || listing.title} 的对方中介联系方式。`}
-              />
-            ))}
-            <ActivityLine text="正在模拟发送看房时间请求，并等待对方中介回复。" active />
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ActivityLine({ text, active }: { text: string; active?: boolean }) {
-  return (
-    <div className="flex gap-3 text-sm leading-6">
-      <span className={`mt-2 size-2 shrink-0 rounded-full ${active ? "animate-pulse bg-[#ff385c]" : "bg-[#dddddd]"}`} />
-      <span className={active ? "font-semibold text-[#222222]" : "text-[#6a6a6a]"}>{text}</span>
-    </div>
-  )
-}
-
 function ListingDetailPanel({
   listing,
   onClose,
@@ -3101,7 +2677,7 @@ function ListingDetailPanel({
         </div>
         <div className="mt-4 space-y-4">
           <div>
-            <span className={`rounded-full border px-3 py-1 text-xs font-bold ${statusTone[listing.status]}`}>{listing.statusLabel}</span>
+            <span className={`rounded-full border px-3 py-1 text-xs font-bold ${statusTone[listing.status]}`}>{localizedStatusLabel(listing)}</span>
             <h2 className="mt-3 text-2xl font-bold tracking-[-0.35px]">{listing.title}</h2>
             <p className="mt-1 text-sm font-medium text-[#6a6a6a]">{listing.address}</p>
           </div>
@@ -3118,7 +2694,7 @@ function ListingDetailPanel({
           )}
 
           <div className="grid grid-cols-2 gap-3 text-sm">
-            <InfoTile icon={Calendar} label="Suggested time" value={listing.suggestedTime ?? "Pending"} />
+            <InfoTile icon={Calendar} label="Suggested time" value={localizedSuggestedTime(listing.suggestedTime)} />
             <InfoTile icon={Building2} label="Unit" value={listing.unitNo} />
             <InfoTile icon={UserRound} label="Co-agent" value={listing.coAgent.name} />
             <InfoTile icon={PhoneCall} label="Phone" value={listing.coAgent.phone} />

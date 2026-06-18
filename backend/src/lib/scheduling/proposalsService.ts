@@ -41,6 +41,7 @@ import { supabaseForUser } from '../supabase';
 import { getCurrentJwt } from '../userContext';
 import { planSchedule } from './planSchedule';
 import type { TimeWindow } from './timeUtils';
+import { findListingByReference } from '../llm/listingIndex';
 
 const DEFAULT_VIEWING_MINUTES = 30;
 
@@ -94,12 +95,7 @@ function parseSlot(
 }
 
 function findListing(listings: Listing[], idOrName: string): Listing | undefined {
-  const byId = listings.find((l) => l.id === idOrName);
-  if (byId) return byId;
-  const lc = idOrName.toLowerCase();
-  return listings.find(
-    (l) => l.title.toLowerCase().includes(lc) || l.condo.toLowerCase().includes(lc),
-  );
+  return findListingByReference(listings, idOrName);
 }
 
 function inferScheduledDate(
@@ -339,6 +335,11 @@ export async function buildAddConstraintProposal(
   const tour = await getTourDetail(ctx.tourId);
   if (!tour) return { error: 'Tour not found.' };
   const listings = await listListingsByTour(ctx.tourId);
+  constraints = constraints.map((constraint) => {
+    if (!constraint.listing_id) return constraint;
+    const listing = findListing(listings, constraint.listing_id);
+    return listing ? { ...constraint, listing_id: listing.id } : constraint;
+  });
   const focusedListingId =
     ctx.focusedListingId ||
     constraints.find((constraint) => constraint.listing_id)?.listing_id;
@@ -411,16 +412,18 @@ export async function buildAddConstraintProposal(
     readyBriefs.map((brief) => brief.listingId),
   );
   if (focusedListingId) readyListingIds.add(focusedListingId);
-  const lockedConfirmed = listings.filter(
+  const globalReplan = !ctx.focusedListingId;
+  const confirmedListings = listings.filter(
     (listing) => listing.status === 'confirmed' && Boolean(listing.suggestedTime),
   );
-  const readyCandidates = listings.filter(
-    (listing) =>
-      readyListingIds.has(listing.id) &&
-      listing.status !== 'confirmed' &&
-      listing.agentReachable !== false &&
-      (listing.availability || []).length > 0,
-  );
+  const lockedConfirmed = globalReplan ? [] : confirmedListings;
+  const readyCandidates = listings.filter((listing) => {
+    if (listing.agentReachable === false || !(listing.availability || []).length) {
+      return false;
+    }
+    if (globalReplan) return true;
+    return readyListingIds.has(listing.id) && listing.status !== 'confirmed';
+  });
   for (const constraint of constraints) {
     if (
       ['include_listing', 'must_morning', 'must_afternoon'].includes(constraint.type) &&
@@ -510,6 +513,21 @@ export async function buildAddConstraintProposal(
   const unscheduledById = new Map(
     result.unschedulable.map((item) => [item.listingId, item.reason]),
   );
+  const preserveConfirmed = constraints.some(
+    (constraint) => constraint.type === 'preserve_confirmed',
+  );
+  if (globalReplan && preserveConfirmed) {
+    const droppedConfirmed = confirmedListings.filter(
+      (listing) => !scheduledById.has(listing.id),
+    );
+    if (droppedConfirmed.length) {
+      return {
+        error:
+          'The requested constraints cannot preserve all confirmed listings: ' +
+          droppedConfirmed.map((listing) => listing.title).join(', '),
+      };
+    }
+  }
   if (
     focusedListing &&
     constraints.some((constraint) =>
@@ -535,7 +553,10 @@ export async function buildAddConstraintProposal(
   const diff: ProposalChange[] = [];
 
   for (const listing of readyCandidates) {
-    const from = null;
+    const from =
+      listing.status === 'confirmed' && listing.suggestedTime
+        ? listing.suggestedTime
+        : null;
     const to = scheduledById.get(listing.id) ?? null;
     if (to && to !== from) {
       diff.push({
@@ -545,6 +566,16 @@ export async function buildAddConstraintProposal(
         from,
         to,
         resultStatus: 'confirmed',
+      });
+    } else if (from && !to && !preserveConfirmed) {
+      diff.push({
+        listingId: listing.id,
+        listingLabel: listing.title,
+        action: 'drop',
+        from,
+        to: null,
+        resultStatus: 'needs-attention',
+        reason: unscheduledById.get(listing.id),
       });
     }
   }
@@ -561,8 +592,8 @@ export async function buildAddConstraintProposal(
 
   return createProposal(ctx.sessionId, {
     intentSummary:
-      `Replan ${readyCandidates.length} ready listing${readyCandidates.length === 1 ? '' : 's'} ` +
-      `while preserving ${lockedConfirmed.length} confirmed viewing${lockedConfirmed.length === 1 ? '' : 's'} — ${summary}`,
+      `Replan ${readyCandidates.length} listing${readyCandidates.length === 1 ? '' : 's'} ` +
+      `for the full tour — ${summary}`,
     mode: 'full',
     changes: requestedChanges,
     cascade,

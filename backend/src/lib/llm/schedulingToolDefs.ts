@@ -60,7 +60,7 @@ export const SCHEDULING_TOOLS: ChatCompletionTool[] = [
         properties: {
           listing_id: {
             type: 'string',
-            description: 'The listing id (uuid) the user is asking about.',
+            description: 'The listing id (uuid) or visible reference such as "#3" / "3号房源".',
           },
         },
         required: ['listing_id'],
@@ -78,7 +78,7 @@ export const SCHEDULING_TOOLS: ChatCompletionTool[] = [
         properties: {
           listing_id: {
             type: 'string',
-            description: 'The listing id the user is asking about.',
+            description: 'The listing id (uuid) or visible reference such as "#3" / "3号房源".',
           },
         },
         required: ['listing_id'],
@@ -169,7 +169,7 @@ export const SCHEDULING_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          listing_id: { type: 'string' },
+          listing_id: { type: 'string', description: 'The listing id (uuid) or visible reference such as "#3" / "3号房源".' },
           new_start: {
             type: 'string',
             description: 'New start time in HH:MM (24h) format, e.g. "11:00".',
@@ -193,8 +193,8 @@ export const SCHEDULING_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          listing_id_a: { type: 'string' },
-          listing_id_b: { type: 'string' },
+          listing_id_a: { type: 'string', description: 'The listing id (uuid) or visible reference such as "#3" / "3号房源".' },
+          listing_id_b: { type: 'string', description: 'The listing id (uuid) or visible reference such as "#5" / "5号房源".' },
         },
         required: ['listing_id_a', 'listing_id_b'],
       },
@@ -209,7 +209,7 @@ export const SCHEDULING_TOOLS: ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          listing_id: { type: 'string' },
+          listing_id: { type: 'string', description: 'The listing id (uuid) or visible reference such as "#3" / "3号房源".' },
           reason: {
             type: 'string',
             description: 'Optional short reason captured for the audit log.',
@@ -245,7 +245,7 @@ export const SCHEDULING_TOOLS: ChatCompletionTool[] = [
                 listing_id: {
                   type: 'string',
                   description:
-                    'Required for include_listing / must_morning / must_afternoon.',
+                    'Required for include_listing / must_morning / must_afternoon. Use uuid or visible reference such as "#3" / "3号房源".',
                 },
                 value: {
                   type: 'string',
@@ -333,6 +333,7 @@ export function buildSystemPrompt(args: {
     "- When propose_reschedule produces a `cascade` (other listings had to move so yours could fit), explicitly list every cascading change before asking for approval.",
     "- Before proposing changes the user did not request, ask first.",
     "- When a selected listing is provided, interpret 'this listing', '这套', and similar references as that listing.",
+    "- The left listing rail shows stable visible references like #1, #2, #3 for the current schedule order. When the user mentions '#3', '3号房源', or 'listing 3', use that visible reference to identify the listing; do not infer from title similarity.",
     "- A blocked interval such as lunch 12:30–13:30 means constraints=[{type:'exclude_time_window', value:'12:30', end_value:'13:30'}]. It does NOT mean no viewings before 13:30.",
     "- Reply in the language the user writes in. Default English; switch to Chinese (Simplified) if they do.",
     "- Don't second-guess the optimizer's geographic clustering unless the user asks. The cluster groupings reflect real travel times.",

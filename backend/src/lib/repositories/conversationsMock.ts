@@ -3,11 +3,9 @@
  *
  * For every listing under the given tour we generate a short WhatsApp-style
  * thread between our AI assistant and the opposing co-agent. Roughly:
- *   - 50% are happy path → co-agent gives 1–2 specific slots
- *   - 25% are partial   → co-agent only gives 1 narrow slot (may not intersect
- *                         with buyer's window)
- *   - 15% are unreachable → co-agent never replies (or replies "let me check")
- *   - 10% are rejected   → unit already sold/rented
+ *   - 75% are happy path → co-agent gives slots that overlap the buyer window
+ *   - 17% are partial   → co-agent gives a real slot outside the buyer window
+ *   - 8% are unreachable → co-agent never replies (or replies "let me check")
  *
  * The conversations are persisted into the same butler-web-store.json under
  * `conversations[tourId]`. We also prepare each listing with:
@@ -73,26 +71,41 @@ const SCENARIOS: Scenario[] = [
   {
     name: 'happy',
     agentReachable: true,
-    reply: 'Saturday morning works! I can do 9–12. Sunday afternoon also ok.',
-    slotsBuilder: (sat, sun) => [
+    reply: 'Saturday is quite flexible — 9–12, 12–3, or 3–4:30 works. Next Saturday also same.',
+    slotsBuilder: (sat, nextSat) => [
       { date: sat, startTime: '09:00', endTime: '12:00' },
-      { date: sun, startTime: '14:00', endTime: '17:00' },
-    ],
-  },
-  {
-    name: 'happy',
-    agentReachable: true,
-    reply: 'Ya can. Sat afternoon 12–3pm, or Sun morning 10–12 also possible.',
-    slotsBuilder: (sat, sun) => [
       { date: sat, startTime: '12:00', endTime: '15:00' },
-      { date: sun, startTime: '10:00', endTime: '12:00' },
+      { date: sat, startTime: '15:00', endTime: '16:30' },
+      { date: nextSat, startTime: '09:00', endTime: '12:00' },
+      { date: nextSat, startTime: '12:00', endTime: '15:00' },
+      { date: nextSat, startTime: '15:00', endTime: '16:30' },
     ],
   },
   {
     name: 'happy',
     agentReachable: true,
-    reply: 'This weekend best is Sat 10–12. Confirm with owner if needed.',
-    slotsBuilder: (sat) => [{ date: sat, startTime: '10:00', endTime: '12:00' }],
+    reply: 'Ya can. This Sat 10–4:30 is okay, next Sat also 10–4:30 possible.',
+    slotsBuilder: (sat, nextSat) => [
+      { date: sat, startTime: '10:00', endTime: '12:00' },
+      { date: sat, startTime: '12:00', endTime: '15:00' },
+      { date: sat, startTime: '15:00', endTime: '16:30' },
+      { date: nextSat, startTime: '10:00', endTime: '12:00' },
+      { date: nextSat, startTime: '12:00', endTime: '15:00' },
+      { date: nextSat, startTime: '15:00', endTime: '16:30' },
+    ],
+  },
+  {
+    name: 'happy',
+    agentReachable: true,
+    reply: 'Owner is flexible across the buyer windows on both Saturdays. Just confirm the final 30-min slot.',
+    slotsBuilder: (sat, nextSat) => [
+      { date: sat, startTime: '10:00', endTime: '12:00' },
+      { date: sat, startTime: '12:00', endTime: '15:00' },
+      { date: sat, startTime: '15:00', endTime: '16:30' },
+      { date: nextSat, startTime: '10:00', endTime: '12:00' },
+      { date: nextSat, startTime: '12:00', endTime: '15:00' },
+      { date: nextSat, startTime: '15:00', endTime: '16:30' },
+    ],
   },
   {
     name: 'partial',
@@ -112,17 +125,30 @@ const SCENARIOS: Scenario[] = [
     reply: '(no reply after 24h follow-up)',
     slotsBuilder: () => [],
   },
-  {
-    name: 'rejected',
-    agentReachable: false,
-    reply: 'Sorry the unit is already sold last week.',
-    slotsBuilder: () => [],
-  },
 ];
 
-/** Distribution: 3 happy / 2 partial / 1 unreachable / 1 rejected = 7 buckets. */
+/**
+ * Distribution: 9 happy / 2 partial / 1 unreachable = 12 buckets.
+ * This keeps imported demo tours useful: at least 70% of seller windows
+ * overlap the buyer availability and can enter the global scheduler.
+ */
+const SCENARIO_BUCKETS: Scenario[] = [
+  SCENARIOS[0],
+  SCENARIOS[1],
+  SCENARIOS[2],
+  SCENARIOS[0],
+  SCENARIOS[1],
+  SCENARIOS[2],
+  SCENARIOS[0],
+  SCENARIOS[1],
+  SCENARIOS[2],
+  SCENARIOS[3],
+  SCENARIOS[4],
+  SCENARIOS[5],
+];
+
 function pickScenario(idx: number): Scenario {
-  return SCENARIOS[idx % SCENARIOS.length];
+  return SCENARIO_BUCKETS[idx % SCENARIO_BUCKETS.length];
 }
 
 /* ─── Public API ─── */
@@ -189,11 +215,7 @@ export async function seedTourConversations(
   const fallbackWeekend = nextWeekendDates();
   const buyerDates = [...new Set(buyerSlots.map((slot) => slot.date))].sort();
   const sat = buyerDates[0] || fallbackWeekend.sat;
-  const nextDay = new Date(`${sat}T00:00:00Z`);
-  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-  const sun = Number.isNaN(nextDay.getTime())
-    ? fallbackWeekend.sun
-    : nextDay.toISOString().slice(0, 10);
+  const sun = buyerDates[1] || fallbackWeekend.sun;
   const dateLabel = (value: string) => {
     const parsed = new Date(`${value}T00:00:00`);
     return Number.isNaN(parsed.getTime())

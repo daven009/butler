@@ -25,6 +25,7 @@ import {
 } from '../repositories/schedulingSessionsRepository';
 import { getTourDetail, listListingsByTour } from '../repositories/plansRepository';
 import { getBuyerSlotsForTour } from '../repositories/conversationsMock';
+import { listingNumberById, sortListingsForScheduleView } from './listingIndex';
 import {
   SCHEDULING_AGENT_MODEL,
   SESSION_LIMITS,
@@ -58,18 +59,16 @@ async function buildPromptContext(tourId: string, focusedListingId?: string) {
     (listing.availability || []).map((slot) => slot.date),
   );
   const buyerSlots = await getBuyerSlotsForTour(tourId, sellerDates);
-  const scheduled = listings.filter((l) => l.status === 'confirmed' && l.suggestedTime);
-  const unscheduled = listings.filter(
-    (l) => l.status !== 'confirmed' && l.status !== 'imported',
-  );
-  // Sort scheduled by start time (HH:MM)
-  scheduled.sort((a, b) => (a.suggestedTime || '').localeCompare(b.suggestedTime || ''));
+  const sortedListings = sortListingsForScheduleView(listings);
+  const listingNumbers = listingNumberById(listings);
+  const scheduled = sortedListings.filter((l) => l.status === 'confirmed' && l.suggestedTime);
+  const unscheduled = sortedListings.filter((l) => l.status !== 'confirmed');
 
   const scheduleTable = scheduled
-    .map((l) => `  ${l.suggestedTime}  ${l.title} (${l.area}) — ${l.coAgent.name}`)
+    .map((l) => `  #${listingNumbers.get(l.id)}  ${l.suggestedTime}  ${l.title} (${l.area}) — id=${l.id} — ${l.coAgent.name}`)
     .join('\n');
   const unscheduledList = unscheduled
-    .map((l) => `  - ${l.title} (${l.area}): ${l.attentionReason || 'no slot'}`)
+    .map((l) => `  #${listingNumbers.get(l.id)}  ${l.title} (${l.area}) — id=${l.id}: ${l.attentionReason || 'not scheduled yet'}`)
     .join('\n');
   const focused = focusedListingId
     ? listings.find((listing) => listing.id === focusedListingId)
@@ -87,7 +86,7 @@ async function buildPromptContext(tourId: string, focusedListingId?: string) {
     unscheduledList,
     focusedListing: focused
       ? [
-          `${focused.title} (${focused.id})`,
+          `#${listingNumbers.get(focused.id)} ${focused.title} (${focused.id})`,
           `area=${focused.area}`,
           `status=${focused.status}`,
           `currentTime=${focused.suggestedTime ?? 'not scheduled'}`,

@@ -347,13 +347,12 @@ export interface ScheduleChangeProposal {
   createdAt: string
 }
 
-/** Open the listing-scoped Butler session for one listing. */
+/** Open the global Tour session, or a listing-scoped session when listingId is provided. */
 export async function openSchedulingSession(
   tourId: string,
   runId?: string,
   listingId?: string,
 ): Promise<SchedulingSession> {
-  if (!listingId) throw new Error('listingId is required for a scheduling session')
   const data = await apiFetch<{ session: SchedulingSession }>(
     `/tours/${tourId}/scheduling-sessions`,
     {

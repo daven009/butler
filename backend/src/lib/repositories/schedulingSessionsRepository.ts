@@ -17,6 +17,14 @@ function db(): SupabaseClient {
   return supabaseForUser(getCurrentJwt());
 }
 
+function isUniqueViolation(error: unknown): boolean {
+  const err = error as { code?: string; message?: string } | null;
+  return (
+    err?.code === '23505' ||
+    Boolean(err?.message?.includes('duplicate key value violates unique constraint'))
+  );
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────
 
 export interface SchedulingSession {
@@ -242,21 +250,24 @@ export async function getOrOpenSession(
   const userId = getCurrentUserId();
   const c = db();
 
-  let existingQuery = c
-    .from('scheduling_sessions')
-    .select('*')
-    .eq('tour_id', tourId)
-    .eq('user_id', userId)
-    .eq('status', 'open');
-  existingQuery = listingId
-    ? existingQuery.eq('listing_id', listingId)
-    : existingQuery.is('listing_id', null);
-  const { data: existing, error: findErr } = await existingQuery
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (findErr) throw findErr;
-  if (existing) return rowToSession(existing as SessionRow);
+  const findOpenSession = async (): Promise<SchedulingSession | undefined> => {
+    let query = c
+      .from('scheduling_sessions')
+      .select('*')
+      .eq('tour_id', tourId)
+      .eq('user_id', userId)
+      .eq('status', 'open');
+    query = listingId ? query.eq('listing_id', listingId) : query.is('listing_id', null);
+    const { data, error } = await query
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? rowToSession(data as SessionRow) : undefined;
+  };
+
+  const existing = await findOpenSession();
+  if (existing) return existing;
 
   const { data, error } = await c
     .from('scheduling_sessions')
@@ -269,7 +280,13 @@ export async function getOrOpenSession(
     })
     .select()
     .single();
-  if (error) throw error;
+  if (error) {
+    if (isUniqueViolation(error)) {
+      const session = await findOpenSession();
+      if (session) return session;
+    }
+    throw error;
+  }
   return rowToSession(data as SessionRow);
 }
 

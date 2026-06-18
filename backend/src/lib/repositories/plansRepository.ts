@@ -817,7 +817,10 @@ import {
   geocodeListings,
 } from '../scheduling/geoUtils';
 import { getOneMapToken } from '../scheduling/oneMapClient';
-import { getBuyerSlotsForTour } from './conversationsMock';
+import {
+  getBuyerSlotsForTour,
+  markAvailabilityMismatches,
+} from './conversationsMock';
 import {
   STEP_KEYS,
   type StepKey,
@@ -858,6 +861,21 @@ export async function startSchedulingRun(tourId: string): Promise<SchedulingRun>
   });
 
   return run;
+}
+
+export async function getLatestSchedulingRunForTour(
+  tourId: string,
+): Promise<SchedulingRun | undefined> {
+  const { data, error } = await db()
+    .from('scheduling_runs')
+    .select('*')
+    .eq('tour_id', tourId)
+    .in('status', ['running', 'completed'])
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? rowToSchedulingRun(data as SchedulingRunRow) : undefined;
 }
 
 /**
@@ -1018,6 +1036,7 @@ async function runScheduler(
       progress: 100,
       step_log: stepLog,
     });
+    await markAvailabilityMismatches(tourId);
     console.log('[scheduler] ✓ run', runId, 'completed');
   });
 }
