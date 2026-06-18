@@ -28,15 +28,29 @@ fi
 
 echo -e "\n📦 Step 1/5: 打包源码（排除大文件）..."
 rm -f "${SRC_TAR}"
-tar -czf "${SRC_TAR}" \
+LC_ALL=C COPYFILE_DISABLE=1 tar --no-xattrs -czf "${SRC_TAR}" \
   --exclude='./.git' \
+  --exclude='./.DS_Store' \
+  --exclude='./.codebuddy' \
+  --exclude='./.env' \
+  --exclude='./.logs' \
+  --exclude='./.npm-cache' \
   --exclude='./node_modules' \
+  --exclude='./deploy/dist' \
+  --exclude='./backend/.DS_Store' \
+  --exclude='./backend/.env' \
+  --exclude='./backend/.logs' \
+  --exclude='./backend/.playwright' \
+  --exclude='./backend/dist' \
   --exclude='./web/node_modules' \
   --exclude='./web/.git' \
+  --exclude='./web/.DS_Store' \
+  --exclude='./web/.env.local' \
+  --exclude='./web/.playwright-cli' \
+  --exclude='./web/dist' \
   --exclude='./backend/node_modules' \
   --exclude='./debug_video' \
   --exclude='./appointment-scheduler.tar.gz' \
-  --exclude='./.codebuddy' \
   --exclude='./_archive_*' \
   --exclude='./_recovered' \
   .

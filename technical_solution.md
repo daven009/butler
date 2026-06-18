@@ -231,7 +231,7 @@ Server: `47.236.98.146`, root SSH (key-based), Docker 26 + Compose v2.27. Deploy
 - `deploy/start.sh` — container entrypoint: launches Xvfb, then backend, then nginx in foreground.
 
 ### Scripts
-- `deploy/deploy-source-build.sh` — **the one we use**. Tars source locally, scps it + `docker-compose.yml` + `.env` + nginx host conf to the server, runs `docker compose build` on the server (so `VITE_*` envs are properly forwarded), then `docker compose up -d --force-recreate`, reloads host nginx, runs healthcheck. Self-checks for local `.env` first.
+- `deploy/deploy-source-build.sh` — **the one we use**. Tars source locally, excluding local-only archives/cache/build outputs/browser profiles and secret env files, then scps it + `docker-compose.yml` + `.env` + nginx host conf to the server. It runs `docker compose build` on the server (so `VITE_*` envs are properly forwarded), then `docker compose up -d --force-recreate`, reloads host nginx, and runs healthcheck. Self-checks for local `.env` first; that `.env` is uploaded separately to the remote compose directory.
 - `deploy/deploy.sh` — older variant that builds locally and ships the image as a tarball. Slow on Apple Silicon (cross-arch). Kept for reference.
 - `deploy/deploy-registry.sh` — push to a docker registry then pull on server. Requires `IMAGE_REPO` env. Useful when you have an Aliyun ACR set up.
 

@@ -8,6 +8,10 @@
 
 ---
 
+## 2026-06-18 — Shrink Aliyun source deploy package
+
+`deploy/deploy-source-build.sh` now excludes local-only deployment archives (`deploy/dist`), Playwright browser profiles, build outputs, node modules, npm caches, logs and local secret files from the source tarball it uploads to Aliyun. The tar command also disables macOS xattrs, which removes the noisy `LIBARCHIVE.xattr...` warnings on the server. A local package-size check after the change reduced the upload artifact from about 830MB to about 600KB while keeping `Dockerfile`, `docker-compose.yml`, backend/web package manifests and deploy configs in the archive. Runtime/build env is unchanged because the script still uploads root `.env` separately to `/opt/appointment-scheduler/.env`.
+
 ## 2026-06-14 — Make listing briefs the only scheduling entry point
 
 The separate Tour-level scheduling button and global Butler session path have been retired. A Tour with listings now opens directly into the selected listing's AI Schedule Brief; the first finalized brief creates the initial Tour proposal, and every later `submit_listing_brief` reloads all `ready` briefs for that Tour and jointly replans every ready, unconfirmed listing. On the first successful brief, the tool returns an explicit initialization signal and Butler deterministically tells the user that Tour scheduling has been established and the first valid listing has joined the initial proposal. Existing confirmed viewings remain fixed: their slots plus a travel buffer are removed from buyer availability before the deterministic scheduler runs, so later proposals cannot move them. Listing priority influences candidate order, proposals still require explicit Apply, and session creation now rejects requests without `listingId`. This is whole-candidate replanning under locked confirmed constraints, but `planSchedule` remains a greedy heuristic and does not claim mathematically proven global optimality. No migration was added or run.
